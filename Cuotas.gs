@@ -25,9 +25,15 @@ const CUOTAS_CFG = {
     'Fecha', 'Sucursal', 'Pedido: ID', 'Condición Comercial', 'Producto', 'Precio Unitario',
     'Plan', 'Canal de venta'
   ],
-  // Columnas extra de Resumen (J:K), la I (hoy/ayer) no se toca
-  COL_EXTRA_RESUMEN: 10,
-  ENCABEZADO_EXTRA_RESUMEN: ['Precio esperado', 'Regla aplicada'],
+  // Columnas extra de Resumen, a partir de la I
+  COL_EXTRA_RESUMEN: 9,
+  ENCABEZADO_EXTRA_RESUMEN: ['Precio esperado', 'Regla aplicada', '% aplicado'],
+  ETIQUETA_BASE: { minimo: 'mínimo', lista: 'lista' },
+
+  // Regla con la que se evaluo cada pedido: si la hoja de condiciones cambia despues, no es retroactivo
+  HOJA_REGLAS_APLICADAS: 'Reglas aplicadas',
+  ENCABEZADO_REGLAS_APLICADAS: ['Clave', 'Condición', 'Precio Mínimo', 'Asignar precio lista', 'Coeficiente', 'Registrada'],
+  RETENCION_DIAS: 90,
 
   // Hoja de condiciones comerciales (la baja la hoja API) y sus encabezados
   HOJA_CONDICIONES: 'condiciones comerciales',
@@ -129,16 +135,67 @@ function cuotasLeerVS_(ss, reglas) {
     if (i < 0) throw new Error('VS: no existe la columna "' + CUOTAS_CFG.VS[k] + '"');
     col[k] = i;
   });
+  const snapshots = cuotasLeerReglasAplicadas_(ss);
+  const nuevos = [];
   const filas = [];
   for (let r = 1; r < datos.length; r++) {
     const f = datos[r];
     if (String(f[col.pedido]).trim() === '') continue;
     const fila = {};
     Object.keys(col).forEach(function (k) { fila[k] = f[col[k]]; });
-    Object.assign(fila, evaluarFila_(fila, reglas));
+
+    // Regla vigente al evaluar el pedido por primera vez (no cambia si despues cambia la hoja)
+    const cond = cuotasClave_(fila.condicion);
+    const clave = cuotasClave_(fila.pedido) + '||' + cuotasClave_(fila.producto) + '||' + cond;
+    let regla = snapshots[clave];
+    if (!regla && reglas[cond]) {
+      regla = reglas[cond];
+      snapshots[clave] = regla;
+      nuevos.push([clave, regla.nombre, regla.precioMinimo, regla.precioLista, regla.coeficiente === null ? '' : regla.coeficiente, new Date()]);
+    }
+    const reglasFila = {};
+    if (regla) reglasFila[cond] = regla;
+    Object.assign(fila, evaluarFila_(fila, reglasFila));
     filas.push(fila);
   }
+  cuotasGuardarReglasAplicadas_(ss, nuevos);
   return filas;
+}
+
+function cuotasLeerReglasAplicadas_(ss) {
+  const mapa = {};
+  const sh = ss.getSheetByName(CUOTAS_CFG.HOJA_REGLAS_APLICADAS);
+  if (!sh || sh.getLastRow() < 2) return mapa;
+  const datos = sh.getDataRange().getValues();
+  for (let r = 1; r < datos.length; r++) {
+    const f = datos[r];
+    if (String(f[0]) === '') continue;
+    mapa[String(f[0])] = {
+      nombre: String(f[1]),
+      precioMinimo: f[2] === true || String(f[2]).toUpperCase() === 'TRUE',
+      precioLista: f[3] === true || String(f[3]).toUpperCase() === 'TRUE',
+      coeficiente: cuotasANumero_(f[4])
+    };
+  }
+  return mapa;
+}
+
+function cuotasGuardarReglasAplicadas_(ss, nuevos) {
+  const nCols = CUOTAS_CFG.ENCABEZADO_REGLAS_APLICADAS.length;
+  const sh = ss.getSheetByName(CUOTAS_CFG.HOJA_REGLAS_APLICADAS) || ss.insertSheet(CUOTAS_CFG.HOJA_REGLAS_APLICADAS);
+  if (sh.getLastRow() === 0) sh.getRange(1, 1, 1, nCols).setValues([CUOTAS_CFG.ENCABEZADO_REGLAS_APLICADAS]);
+  if (nuevos.length) sh.getRange(sh.getLastRow() + 1, 1, nuevos.length, nCols).setValues(nuevos);
+
+  // Limpieza de registros viejos
+  const limite = Date.now() - CUOTAS_CFG.RETENCION_DIAS * 24 * 3600 * 1000;
+  const datos = sh.getDataRange().getValues();
+  const vigentes = datos.slice(1).filter(function (f) {
+    return !(f[5] instanceof Date) || f[5].getTime() >= limite;
+  });
+  if (vigentes.length < datos.length - 1) {
+    sh.getRange(2, 1, sh.getMaxRows() - 1, nCols).clearContent();
+    if (vigentes.length) sh.getRange(2, 1, vigentes.length, nCols).setValues(vigentes);
+  }
 }
 
 // ============================ REGLAS ============================
@@ -217,7 +274,8 @@ function evaluarPorCondicion_(f, regla) {
   return {
     estado: cuotas.ok ? precio.estado : 'revisar',
     esperado: precio.esperado,
-    regla: (precio.regla ? precio.regla + ' | ' : '') + cuotas.detalle
+    regla: (precio.regla ? precio.regla + ' | ' : '') + cuotas.detalle,
+    aplicado: precio.aplicado || ''
   };
 }
 
@@ -228,19 +286,28 @@ function evaluarPrecioCondicion_(f, regla) {
   else if (regla.precioMinimo) { base = cuotasANumero_(f.pvm); nombreBase = 'PVM'; }
   else if (CUOTAS_CFG.SIN_BASE === 'lista') { base = cuotasANumero_(f.lista); nombreBase = 'Lista'; }
   else if (CUOTAS_CFG.SIN_BASE === 'pvm') { base = cuotasANumero_(f.pvm); nombreBase = 'PVM'; }
-  else return { estado: '', esperado: '', regla: '' };
+  else return { estado: '', esperado: '', regla: '', aplicado: '' };
 
-  if (regla.coeficiente === null) return { estado: '', esperado: '', regla: '' };
+  if (regla.coeficiente === null) return { estado: '', esperado: '', regla: '', aplicado: '' };
   const etiqueta = nombreBase + ' x ' + regla.coeficiente;
   const pu = cuotasANumero_(f.precioUnitario);
-  if (base === null || pu === null) return { estado: 'revisar', esperado: '', regla: etiqueta + ' (falta precio)' };
+  if (base === null || pu === null) return { estado: 'revisar', esperado: '', regla: etiqueta + ' (falta precio)', aplicado: '' };
 
   const esperado = Math.round(base * regla.coeficiente * 100) / 100;
   let estado;
   if (pu < esperado - CUOTAS_CFG.TOLERANCIA_PESOS) estado = 'revisar';
   else if (pu <= esperado + CUOTAS_CFG.TOLERANCIA_PESOS) estado = 'ok';
   else estado = 'bien';
-  return { estado: estado, esperado: esperado, regla: etiqueta };
+  return { estado: estado, esperado: esperado, regla: etiqueta, aplicado: cuotasPorcentajeAplicado_(pu, base, nombreBase) };
+}
+
+// % real cobrado sobre la base, ej. "+1,4% sobre lista" o "-5,0% sobre mínimo"
+function cuotasPorcentajeAplicado_(precio, base, nombreBase) {
+  if (!base) return '';
+  const pct = Math.round((precio / base - 1) * 1000) / 10;
+  const texto = (pct > 0 ? '+' : '') + pct.toFixed(1).replace('.', ',') + '%';
+  const etiqueta = nombreBase === 'Lista' ? CUOTAS_CFG.ETIQUETA_BASE.lista : CUOTAS_CFG.ETIQUETA_BASE.minimo;
+  return texto + ' sobre ' + etiqueta;
 }
 
 // Cuotas que dice el nombre de la condicion vs cuota cobrada (Cobranza 2).
@@ -299,15 +366,16 @@ function cuotasEscribirResumen_(ss, filas) {
   const nCols = CUOTAS_CFG.ENCABEZADO_RESUMEN.length;
   sh.getRange(1, 1, sh.getMaxRows(), nCols).clearContent(); // tambien saca el QUERY viejo de A1
   sh.getRange(1, 1, 1, nCols).setValues([CUOTAS_CFG.ENCABEZADO_RESUMEN]);
-  sh.getRange(1, CUOTAS_CFG.COL_EXTRA_RESUMEN, sh.getMaxRows(), 2).clearContent();
-  sh.getRange(1, CUOTAS_CFG.COL_EXTRA_RESUMEN, 1, 2).setValues([CUOTAS_CFG.ENCABEZADO_EXTRA_RESUMEN]);
+  const nExtra = CUOTAS_CFG.ENCABEZADO_EXTRA_RESUMEN.length;
+  sh.getRange(1, CUOTAS_CFG.COL_EXTRA_RESUMEN, sh.getMaxRows(), nExtra + 1).clearContent(); // +1 limpia la columna sobrante del layout anterior
+  sh.getRange(1, CUOTAS_CFG.COL_EXTRA_RESUMEN, 1, nExtra).setValues([CUOTAS_CFG.ENCABEZADO_EXTRA_RESUMEN]);
   if (filas.length) {
     const valores = filas.map(function (f) {
       return [f.fecha, f.sucursal, f.pedido, f.condicion, f.producto, f.precioUnitario, f.cuotas, f.canal];
     });
     sh.getRange(2, 1, valores.length, nCols).setValues(valores);
-    const extra = filas.map(function (f) { return [f.esperado, f.regla]; });
-    sh.getRange(2, CUOTAS_CFG.COL_EXTRA_RESUMEN, extra.length, 2).setValues(extra);
+    const extra = filas.map(function (f) { return [f.esperado, f.regla, f.aplicado || '']; });
+    sh.getRange(2, CUOTAS_CFG.COL_EXTRA_RESUMEN, extra.length, nExtra).setValues(extra);
   }
 }
 
