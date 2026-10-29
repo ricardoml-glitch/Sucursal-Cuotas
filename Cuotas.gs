@@ -7,7 +7,7 @@
  */
 
 // =========================== CONFIGURACION ===========================
-const CFG = {
+const CUOTAS_CFG = {
   HOJA_VS: 'VS',
   HOJA_RESUMEN: 'Resumen',
   HOJA_LOG: 'Log Cuotas',
@@ -32,47 +32,40 @@ const CFG = {
   RESUMEN_CANAL_WEB: 'PaginaWeb',          // PaginaWeb solo entra si la referencia contiene el texto de abajo
   RESUMEN_WEB_REFERENCIA: 'mostrador',
 
-  // Triggers (se instalan una vez con instalarTriggers)
+  // Triggers (se instalan una vez con instalarTriggersCuotas)
   HORAS_TRIGGER: [8, 13, 16],
   MINUTO_TRIGGER: 20,
   ESPERA_LOCK_MS: 30000
 };
 
-// ============================= MENU =============================
-function onOpen() {
-  SpreadsheetApp.getUi()
-    .createMenu('Cuotas')
-    .addItem('Actualizar Resumen', 'actualizarResumen')
-    .addToUi();
-}
-
-function instalarTriggers() {
+// ============================ TRIGGERS ============================
+function instalarTriggersCuotas() {
   ScriptApp.getProjectTriggers()
-    .filter(function (t) { return t.getHandlerFunction() === 'actualizarResumen'; })
+    .filter(function (t) { return t.getHandlerFunction() === 'actualizarResumenCuotas'; })
     .forEach(function (t) { ScriptApp.deleteTrigger(t); });
-  CFG.HORAS_TRIGGER.forEach(function (h) {
-    ScriptApp.newTrigger('actualizarResumen').timeBased().everyDays(1).atHour(h).nearMinute(CFG.MINUTO_TRIGGER).create();
+  CUOTAS_CFG.HORAS_TRIGGER.forEach(function (h) {
+    ScriptApp.newTrigger('actualizarResumenCuotas').timeBased().everyDays(1).atHour(h).nearMinute(CUOTAS_CFG.MINUTO_TRIGGER).create();
   });
-  log_('INFO', 'Triggers instalados a las ' + CFG.HORAS_TRIGGER.join(', ') + ' h');
+  cuotasLog_('INFO', 'Triggers instalados a las ' + CUOTAS_CFG.HORAS_TRIGGER.join(', ') + ' h');
 }
 
 // ========================= PROCESO PRINCIPAL =========================
-function actualizarResumen() {
+function actualizarResumenCuotas() {
   const lock = LockService.getScriptLock();
-  if (!lock.tryLock(CFG.ESPERA_LOCK_MS)) {
-    log_('WARN', 'Otra ejecucion en curso, se omite');
+  if (!lock.tryLock(CUOTAS_CFG.ESPERA_LOCK_MS)) {
+    cuotasLog_('WARN', 'Otra ejecucion en curso, se omite');
     return;
   }
   const t0 = Date.now();
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const filas = leerVS_(ss);
-    const revisar = filas.filter(esParaResumen_);
-    revisar.sort(function (a, b) { return fechaMs_(b.fecha) - fechaMs_(a.fecha); });
-    escribirResumen_(ss, revisar);
-    log_('OK', 'VS: ' + filas.length + ' filas leidas | Resumen: ' + revisar.length + ' | ' + (Date.now() - t0) + ' ms');
+    const filas = cuotasLeerVS_(ss);
+    const revisar = filas.filter(cuotasEsParaResumen_);
+    revisar.sort(function (a, b) { return cuotasFechaMs_(b.fecha) - cuotasFechaMs_(a.fecha); });
+    cuotasEscribirResumen_(ss, revisar);
+    cuotasLog_('OK', 'VS: ' + filas.length + ' filas leidas | Resumen: ' + revisar.length + ' | ' + (Date.now() - t0) + ' ms');
   } catch (e) {
-    log_('ERROR', e.message + (e.stack ? ' | ' + e.stack.split('\n')[1] : ''));
+    cuotasLog_('ERROR', e.message + (e.stack ? ' | ' + e.stack.split('\n')[1] : ''));
     throw e;
   } finally {
     lock.releaseLock();
@@ -80,15 +73,15 @@ function actualizarResumen() {
 }
 
 // =========================== LECTURA ===========================
-function leerVS_(ss) {
-  const sh = ss.getSheetByName(CFG.HOJA_VS);
-  if (!sh) throw new Error('Falta la hoja "' + CFG.HOJA_VS + '"');
+function cuotasLeerVS_(ss) {
+  const sh = ss.getSheetByName(CUOTAS_CFG.HOJA_VS);
+  if (!sh) throw new Error('Falta la hoja "' + CUOTAS_CFG.HOJA_VS + '"');
   const datos = sh.getDataRange().getValues();
   const enc = datos[0].map(function (h) { return String(h).trim(); });
   const col = {};
-  Object.keys(CFG.VS).forEach(function (k) {
-    const i = enc.indexOf(CFG.VS[k]);
-    if (i < 0) throw new Error('VS: no existe la columna "' + CFG.VS[k] + '"');
+  Object.keys(CUOTAS_CFG.VS).forEach(function (k) {
+    const i = enc.indexOf(CUOTAS_CFG.VS[k]);
+    if (i < 0) throw new Error('VS: no existe la columna "' + CUOTAS_CFG.VS[k] + '"');
     col[k] = i;
   });
   const filas = [];
@@ -104,7 +97,7 @@ function leerVS_(ss) {
 }
 
 // ============================ REGLAS ============================
-function aNumero_(v) {
+function cuotasANumero_(v) {
   if (typeof v === 'number') return v;
   if (v === '' || v === null || v === undefined) return null;
   const n = parseFloat(String(v).replace(/\./g, '').replace(',', '.'));
@@ -116,14 +109,14 @@ function aNumero_(v) {
  * Devuelve '' (no aplica), 'ok', 'bien' o 'revisar'.
  */
 function evaluarCuotas_(f) {
-  const cuotas = aNumero_(f.cuotas);
+  const cuotas = cuotasANumero_(f.cuotas);
   if (cuotas === null || cuotas <= 1) return '';
 
-  const pu = aNumero_(f.precioUnitario);
-  const lista = aNumero_(f.lista);
-  const pvm = aNumero_(f.pvm);
+  const pu = cuotasANumero_(f.precioUnitario);
+  const lista = cuotasANumero_(f.lista);
+  const pvm = cuotasANumero_(f.pvm);
 
-  if (String(f.condicion) === CFG.COND_QR_MINIMO) {
+  if (String(f.condicion) === CUOTAS_CFG.COND_QR_MINIMO) {
     return (pu === null || pvm === null || pu < pvm) ? 'revisar' : 'ok';
   }
   if (pu === null || lista === null) return 'revisar'; // sin precio de lista no se puede validar
@@ -131,25 +124,25 @@ function evaluarCuotas_(f) {
   return pu < lista ? 'revisar' : 'bien';
 }
 
-function esParaResumen_(f) {
+function cuotasEsParaResumen_(f) {
   if (f.estado !== 'revisar') return false;
-  if (CFG.RESUMEN_EXCLUIR_COND.indexOf(String(f.condicion)) >= 0) return false;
-  if (String(f.canal) === CFG.RESUMEN_CANAL_WEB) {
-    return String(f.referencia).toLowerCase().indexOf(CFG.RESUMEN_WEB_REFERENCIA) >= 0;
+  if (CUOTAS_CFG.RESUMEN_EXCLUIR_COND.indexOf(String(f.condicion)) >= 0) return false;
+  if (String(f.canal) === CUOTAS_CFG.RESUMEN_CANAL_WEB) {
+    return String(f.referencia).toLowerCase().indexOf(CUOTAS_CFG.RESUMEN_WEB_REFERENCIA) >= 0;
   }
   return true;
 }
 
-function fechaMs_(d) {
+function cuotasFechaMs_(d) {
   return d instanceof Date ? d.getTime() : 0;
 }
 
 // =========================== ESCRITURA ===========================
-function escribirResumen_(ss, filas) {
-  const sh = ss.getSheetByName(CFG.HOJA_RESUMEN) || ss.insertSheet(CFG.HOJA_RESUMEN);
-  const nCols = CFG.ENCABEZADO_RESUMEN.length;
+function cuotasEscribirResumen_(ss, filas) {
+  const sh = ss.getSheetByName(CUOTAS_CFG.HOJA_RESUMEN) || ss.insertSheet(CUOTAS_CFG.HOJA_RESUMEN);
+  const nCols = CUOTAS_CFG.ENCABEZADO_RESUMEN.length;
   sh.getRange(1, 1, sh.getMaxRows(), nCols).clearContent(); // tambien saca el QUERY viejo de A1
-  sh.getRange(1, 1, 1, nCols).setValues([CFG.ENCABEZADO_RESUMEN]);
+  sh.getRange(1, 1, 1, nCols).setValues([CUOTAS_CFG.ENCABEZADO_RESUMEN]);
   if (filas.length) {
     const valores = filas.map(function (f) {
       return [f.fecha, f.sucursal, f.pedido, f.condicion, f.producto, f.precioUnitario, f.cuotas, f.canal];
@@ -159,14 +152,14 @@ function escribirResumen_(ss, filas) {
 }
 
 // ============================== LOG ==============================
-function log_(nivel, mensaje) {
+function cuotasLog_(nivel, mensaje) {
   Logger.log('[' + nivel + '] ' + mensaje);
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const sh = ss.getSheetByName(CFG.HOJA_LOG) || ss.insertSheet(CFG.HOJA_LOG);
+    const sh = ss.getSheetByName(CUOTAS_CFG.HOJA_LOG) || ss.insertSheet(CUOTAS_CFG.HOJA_LOG);
     if (sh.getLastRow() === 0) sh.appendRow(['Fecha', 'Nivel', 'Mensaje']);
     sh.appendRow([new Date(), nivel, mensaje]);
-    const sobran = sh.getLastRow() - 1 - CFG.MAX_FILAS_LOG;
+    const sobran = sh.getLastRow() - 1 - CUOTAS_CFG.MAX_FILAS_LOG;
     if (sobran > 0) sh.deleteRows(2, sobran);
   } catch (e) {
     Logger.log('No se pudo escribir el log: ' + e.message);
