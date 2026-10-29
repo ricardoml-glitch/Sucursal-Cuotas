@@ -27,7 +27,12 @@ const CUOTAS_CFG = {
   ],
   // Columnas extra de Resumen, a partir de la I
   COL_EXTRA_RESUMEN: 9,
-  ENCABEZADO_EXTRA_RESUMEN: ['Precio esperado', 'Regla aplicada', '% aplicado'],
+  ENCABEZADO_EXTRA_RESUMEN: ['Precio esperado', 'Regla aplicada', '% aplicado', 'Detectado'],
+  FORMATO_FECHA_HORA: 'dd/MM/yyyy HH:mm',
+
+  // Registro de cuando se detecto cada pedido a revisar (se conserva la primera vez)
+  HOJA_DETECTADOS: 'Detectados',
+  ENCABEZADO_DETECTADOS: ['Clave', 'Detectado'],
   ETIQUETA_BASE: { minimo: 'mínimo', lista: 'lista' },
 
   // Regla con la que se evaluo cada pedido: si la hoja de condiciones cambia despues, no es retroactivo
@@ -112,6 +117,7 @@ function actualizarResumenCuotas() {
     const reglas = cuotasLeerReglas_(ss);
     const filas = cuotasLeerVS_(ss, reglas);
     const revisar = filas.filter(cuotasEsParaResumen_);
+    cuotasRegistrarDetectados_(ss, revisar);
     revisar.sort(function (a, b) { return cuotasFechaMs_(b.fecha) - cuotasFechaMs_(a.fecha); });
     cuotasEscribirResumen_(ss, revisar);
     cuotasLog_('OK', 'VS: ' + filas.length + ' filas leidas | Resumen: ' + revisar.length + ' | ' + (Date.now() - t0) + ' ms');
@@ -156,6 +162,7 @@ function cuotasLeerVS_(ss, reglas) {
     const reglasFila = {};
     if (regla) reglasFila[cond] = regla;
     Object.assign(fila, evaluarFila_(fila, reglasFila));
+    fila.clave = clave;
     filas.push(fila);
   }
   cuotasGuardarReglasAplicadas_(ss, nuevos);
@@ -195,6 +202,41 @@ function cuotasGuardarReglasAplicadas_(ss, nuevos) {
   if (vigentes.length < datos.length - 1) {
     sh.getRange(2, 1, sh.getMaxRows() - 1, nCols).clearContent();
     if (vigentes.length) sh.getRange(2, 1, vigentes.length, nCols).setValues(vigentes);
+  }
+}
+
+// ====================== REGISTRO DE DETECCION ======================
+// Guarda cuando se detecto por primera vez cada pedido a revisar (queda en f.detectado)
+function cuotasRegistrarDetectados_(ss, filas) {
+  const nCols = CUOTAS_CFG.ENCABEZADO_DETECTADOS.length;
+  const sh = ss.getSheetByName(CUOTAS_CFG.HOJA_DETECTADOS) || ss.insertSheet(CUOTAS_CFG.HOJA_DETECTADOS);
+  if (sh.getLastRow() === 0) sh.getRange(1, 1, 1, nCols).setValues([CUOTAS_CFG.ENCABEZADO_DETECTADOS]);
+
+  const datos = sh.getDataRange().getValues();
+  const mapa = {};
+  for (let r = 1; r < datos.length; r++) {
+    if (String(datos[r][0]) !== '') mapa[String(datos[r][0])] = datos[r][1];
+  }
+  const ahora = new Date();
+  const nuevos = [];
+  filas.forEach(function (f) {
+    if (!(f.clave in mapa)) {
+      mapa[f.clave] = ahora;
+      nuevos.push([f.clave, ahora]);
+    }
+    f.detectado = mapa[f.clave];
+  });
+  if (nuevos.length) sh.getRange(sh.getLastRow() + 1, 1, nuevos.length, nCols).setValues(nuevos);
+
+  // Limpieza de registros viejos
+  const limite = Date.now() - CUOTAS_CFG.RETENCION_DIAS * 24 * 3600 * 1000;
+  const vigentes = datos.slice(1).filter(function (f) {
+    return String(f[0]) !== '' && (!(f[1] instanceof Date) || f[1].getTime() >= limite);
+  });
+  if (vigentes.length < datos.length - 1) {
+    sh.getRange(2, 1, sh.getMaxRows() - 1, nCols).clearContent();
+    const todos = vigentes.concat(nuevos);
+    if (todos.length) sh.getRange(2, 1, todos.length, nCols).setValues(todos);
   }
 }
 
@@ -374,8 +416,9 @@ function cuotasEscribirResumen_(ss, filas) {
       return [f.fecha, f.sucursal, f.pedido, f.condicion, f.producto, f.precioUnitario, f.cuotas, f.canal];
     });
     sh.getRange(2, 1, valores.length, nCols).setValues(valores);
-    const extra = filas.map(function (f) { return [f.esperado, f.regla, f.aplicado || '']; });
+    const extra = filas.map(function (f) { return [f.esperado, f.regla, f.aplicado || '', f.detectado || '']; });
     sh.getRange(2, CUOTAS_CFG.COL_EXTRA_RESUMEN, extra.length, nExtra).setValues(extra);
+    sh.getRange(2, CUOTAS_CFG.COL_EXTRA_RESUMEN + nExtra - 1, extra.length, 1).setNumberFormat(CUOTAS_CFG.FORMATO_FECHA_HORA);
   }
 }
 
