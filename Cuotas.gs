@@ -50,8 +50,7 @@ const CUOTAS_CFG = {
   RESUMEN_WEB_REFERENCIA: 'mostrador',
 
   // Triggers (se instalan una vez con instalarTriggersCuotas)
-  HORAS_TRIGGER: [8, 13, 16],
-  MINUTO_TRIGGER: 20,
+  INTERVALO_HORAS: 1,   // el resumen se actualiza cada N horas
   ESPERA_LOCK_MS: 30000
 };
 
@@ -61,12 +60,10 @@ function instalarTriggersCuotas() {
   ScriptApp.getProjectTriggers()
     .filter(function (t) { return manejadores.indexOf(t.getHandlerFunction()) >= 0; })
     .forEach(function (t) { ScriptApp.deleteTrigger(t); });
-  CUOTAS_CFG.HORAS_TRIGGER.forEach(function (h) {
-    ScriptApp.newTrigger('actualizarResumenCuotas').timeBased().everyDays(1).atHour(h).nearMinute(CUOTAS_CFG.MINUTO_TRIGGER).create();
-  });
+  ScriptApp.newTrigger('actualizarResumenCuotas').timeBased().everyHours(CUOTAS_CFG.INTERVALO_HORAS).create();
   // Menu como trigger instalable: no pisa un onOpen que ya exista en el proyecto
   ScriptApp.newTrigger('menuCuotas').forSpreadsheet(SpreadsheetApp.getActive()).onOpen().create();
-  cuotasLog_('INFO', 'Triggers instalados: ' + CUOTAS_CFG.HORAS_TRIGGER.join(', ') + ' h y menu Cuotas');
+  cuotasLog_('INFO', 'Triggers instalados: resumen cada ' + CUOTAS_CFG.INTERVALO_HORAS + ' h y menu Cuotas');
 }
 
 // ============================= MENU =============================
