@@ -198,8 +198,12 @@ function evaluarFila_(f, reglas) {
   if (noAnalizar) return { estado: '', esperado: '', regla: '' };
   const regla = reglas[cuotasClave_(f.condicion)];
   if (regla) return evaluarPorCondicion_(f, regla);
+  // Condicion que no esta en la hoja: igual se controla la cuota que dice el nombre
+  const cuotas = evaluarCuotasNombre_(f, { nombre: f.condicion });
+  const estadoCuotas = CUOTAS_CFG.USAR_REGLA_CUOTAS_SIN_CONDICION ? evaluarCuotas_(f) : '';
+  if (!cuotas.ok) return { estado: 'revisar', esperado: '', regla: cuotas.detalle };
   if (CUOTAS_CFG.USAR_REGLA_CUOTAS_SIN_CONDICION) {
-    return { estado: evaluarCuotas_(f), esperado: '', regla: 'cuotas' };
+    return { estado: estadoCuotas, esperado: '', regla: 'cuotas' };
   }
   return { estado: '', esperado: '', regla: '' };
 }
