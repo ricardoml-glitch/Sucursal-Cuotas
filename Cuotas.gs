@@ -59,7 +59,9 @@ const CUOTAS_CFG = {
   SIN_BASE: 'omitir',
   CONTROLAR_CUOTAS_NOMBRE: true,           // la cuota que dice el nombre de la condicion debe coincidir con la cobrada (VS col H)
   PATRON_CUOTAS_NOMBRE: '(\\d+)\\s*cuotas?', // ej. "6 Cuotas Verde", "MP 12 Cuotas"
-  TOLERANCIA_PESOS: 1,                     // diferencia aceptada por redondeos
+  TOLERANCIA_PESOS: 1,
+  // Excepciones: tolerancia en % por debajo del precio esperado, por condicion comercial
+  TOLERANCIA_PORCENTAJE: { 'Mayorista': 0.15 },                     // diferencia aceptada por redondeos
   USAR_REGLA_CUOTAS_SIN_CONDICION: true,   // condiciones que no estan en la hoja: regla anterior por cuotas
 
   // Reglas anteriores (por cuotas)
@@ -336,11 +338,23 @@ function evaluarPrecioCondicion_(f, regla) {
   if (base === null || pu === null) return { estado: 'revisar', esperado: '', regla: etiqueta + ' (falta precio)', aplicado: '' };
 
   const esperado = Math.round(base * regla.coeficiente * 100) / 100;
+  const pct = cuotasToleranciaPorcentaje_(regla.nombre);
+  const tolerancia = Math.max(CUOTAS_CFG.TOLERANCIA_PESOS, esperado * pct);
   let estado;
-  if (pu < esperado - CUOTAS_CFG.TOLERANCIA_PESOS) estado = 'revisar';
+  if (pu < esperado - tolerancia) estado = 'revisar';
   else if (pu <= esperado + CUOTAS_CFG.TOLERANCIA_PESOS) estado = 'ok';
   else estado = 'bien';
-  return { estado: estado, esperado: esperado, regla: etiqueta, aplicado: cuotasPorcentajeAplicado_(pu, base, nombreBase) };
+  const etiquetaFinal = pct > 0 ? etiqueta + ' (tolerancia ' + String(Math.round(pct * 1000) / 10).replace('.', ',') + '%)' : etiqueta;
+  return { estado: estado, esperado: esperado, regla: etiquetaFinal, aplicado: cuotasPorcentajeAplicado_(pu, base, nombreBase) };
+}
+
+function cuotasToleranciaPorcentaje_(nombreCondicion) {
+  const mapa = CUOTAS_CFG.TOLERANCIA_PORCENTAJE;
+  const k = cuotasClave_(nombreCondicion);
+  for (const nombre in mapa) {
+    if (cuotasClave_(nombre) === k) return mapa[nombre];
+  }
+  return 0;
 }
 
 // % real cobrado sobre la base, ej. "+1,4% sobre lista" o "-5,0% sobre mínimo"
