@@ -35,6 +35,8 @@ const CUOTAS_CFG = {
     codigo: 'Condición Comercial: Código', precioMinimo: 'Precio Mínimo',
     coeficiente: 'Coeficiente sobre precio', precioLista: 'Asignar precio lista'
   },
+  // Condiciones que no se analizan (no tienen cobranza en G ni H)
+  CONDICIONES_NO_ANALIZAR: ['Deposito Bancario'],
   // Si la condicion no define base de precio (Precio Minimo y Asignar precio lista en FALSE):
   // 'omitir' = no se controla | 'lista' = contra precio de lista | 'pvm' = contra PVM
   SIN_BASE: 'omitir',
@@ -180,6 +182,10 @@ function cuotasANumero_(v) {
  * Devuelve { estado: '' | 'ok' | 'bien' | 'revisar', esperado, regla }.
  */
 function evaluarFila_(f, reglas) {
+  const noAnalizar = CUOTAS_CFG.CONDICIONES_NO_ANALIZAR.some(function (c) {
+    return cuotasClave_(c) === cuotasClave_(f.condicion);
+  });
+  if (noAnalizar) return { estado: '', esperado: '', regla: '' };
   const regla = reglas[cuotasClave_(f.condicion)];
   if (regla) return evaluarPorCondicion_(f, regla);
   if (CUOTAS_CFG.USAR_REGLA_CUOTAS_SIN_CONDICION) {
