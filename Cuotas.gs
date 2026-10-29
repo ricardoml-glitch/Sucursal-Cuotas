@@ -55,13 +55,31 @@ const CUOTAS_CFG = {
 
 // ============================ TRIGGERS ============================
 function instalarTriggersCuotas() {
+  const manejadores = ['actualizarResumenCuotas', 'menuCuotas'];
   ScriptApp.getProjectTriggers()
-    .filter(function (t) { return t.getHandlerFunction() === 'actualizarResumenCuotas'; })
+    .filter(function (t) { return manejadores.indexOf(t.getHandlerFunction()) >= 0; })
     .forEach(function (t) { ScriptApp.deleteTrigger(t); });
   CUOTAS_CFG.HORAS_TRIGGER.forEach(function (h) {
     ScriptApp.newTrigger('actualizarResumenCuotas').timeBased().everyDays(1).atHour(h).nearMinute(CUOTAS_CFG.MINUTO_TRIGGER).create();
   });
-  cuotasLog_('INFO', 'Triggers instalados a las ' + CUOTAS_CFG.HORAS_TRIGGER.join(', ') + ' h');
+  // Menu como trigger instalable: no pisa un onOpen que ya exista en el proyecto
+  ScriptApp.newTrigger('menuCuotas').forSpreadsheet(SpreadsheetApp.getActive()).onOpen().create();
+  cuotasLog_('INFO', 'Triggers instalados: ' + CUOTAS_CFG.HORAS_TRIGGER.join(', ') + ' h y menu Cuotas');
+}
+
+// ============================= MENU =============================
+function menuCuotas() {
+  SpreadsheetApp.getUi()
+    .createMenu('Cuotas')
+    .addItem('Actualizar Resumen', 'actualizarResumenCuotas')
+    .addItem('Ver Log', 'irALogCuotas')
+    .addToUi();
+}
+
+function irALogCuotas() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(CUOTAS_CFG.HOJA_LOG);
+  if (sh) ss.setActiveSheet(sh);
 }
 
 // ========================= PROCESO PRINCIPAL =========================
