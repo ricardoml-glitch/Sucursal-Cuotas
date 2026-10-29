@@ -37,6 +37,8 @@ const CUOTAS_CFG = {
   },
   // Condiciones que no se analizan (no tienen cobranza en G ni H)
   CONDICIONES_NO_ANALIZAR: ['Deposito Bancario'],
+  // Sucursales que no se analizan
+  SUCURSALES_NO_ANALIZAR: ['FULFILLMENT'],
   // Si la condicion no define base de precio (Precio Minimo y Asignar precio lista en FALSE):
   // 'omitir' = no se controla | 'lista' = contra precio de lista | 'pvm' = contra PVM
   SIN_BASE: 'omitir',
@@ -184,6 +186,8 @@ function cuotasANumero_(v) {
 function evaluarFila_(f, reglas) {
   const noAnalizar = CUOTAS_CFG.CONDICIONES_NO_ANALIZAR.some(function (c) {
     return cuotasClave_(c) === cuotasClave_(f.condicion);
+  }) || CUOTAS_CFG.SUCURSALES_NO_ANALIZAR.some(function (s) {
+    return cuotasClave_(s) === cuotasClave_(f.sucursal);
   });
   if (noAnalizar) return { estado: '', esperado: '', regla: '' };
   const regla = reglas[cuotasClave_(f.condicion)];
