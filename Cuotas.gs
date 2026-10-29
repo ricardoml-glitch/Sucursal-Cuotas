@@ -37,6 +37,10 @@ const CUOTAS_CFG = {
   },
   // Condiciones que no se analizan (no tienen cobranza en G ni H)
   CONDICIONES_NO_ANALIZAR: ['Deposito Bancario'],
+  // Combinaciones canal de venta + condicion comercial que no se analizan
+  CANAL_CONDICION_NO_ANALIZAR: [
+    { canal: 'TioMusa-ML', condicion: 'MercadoPago' }
+  ],
   // Sucursales que no se analizan
   SUCURSALES_NO_ANALIZAR: ['FULFILLMENT'],
   // Si la condicion no define base de precio (Precio Minimo y Asignar precio lista en FALSE):
@@ -188,6 +192,8 @@ function evaluarFila_(f, reglas) {
     return cuotasClave_(c) === cuotasClave_(f.condicion);
   }) || CUOTAS_CFG.SUCURSALES_NO_ANALIZAR.some(function (s) {
     return cuotasClave_(s) === cuotasClave_(f.sucursal);
+  }) || CUOTAS_CFG.CANAL_CONDICION_NO_ANALIZAR.some(function (p) {
+    return cuotasClave_(p.canal) === cuotasClave_(f.canal) && cuotasClave_(p.condicion) === cuotasClave_(f.condicion);
   });
   if (noAnalizar) return { estado: '', esperado: '', regla: '' };
   const regla = reglas[cuotasClave_(f.condicion)];
