@@ -46,6 +46,10 @@ const CUOTAS_CFG = {
   // Reglas anteriores (por cuotas)
   COND_QR_MINIMO: 'QR 3/6 Visa Master',   // se compara contra PVM en vez de Precio de lista
   RESUMEN_EXCLUIR_COND: ['QR 3s m-s'],
+  // Combinaciones sucursal + condicion comercial que no van a Resumen
+  RESUMEN_EXCLUIR_PAR: [
+    { sucursal: 'FACT ELECTRONICA', condicion: 'MercadoPago' }
+  ],
   RESUMEN_CANAL_WEB: 'PaginaWeb',          // PaginaWeb solo entra si la referencia contiene el texto de abajo
   RESUMEN_WEB_REFERENCIA: 'mostrador',
 
@@ -255,6 +259,10 @@ function evaluarCuotas_(f) {
 function cuotasEsParaResumen_(f) {
   if (f.estado !== 'revisar') return false;
   if (CUOTAS_CFG.RESUMEN_EXCLUIR_COND.indexOf(String(f.condicion)) >= 0) return false;
+  const excluido = CUOTAS_CFG.RESUMEN_EXCLUIR_PAR.some(function (p) {
+    return cuotasClave_(p.sucursal) === cuotasClave_(f.sucursal) && cuotasClave_(p.condicion) === cuotasClave_(f.condicion);
+  });
+  if (excluido) return false;
   if (String(f.canal) === CUOTAS_CFG.RESUMEN_CANAL_WEB) {
     return String(f.referencia).toLowerCase().indexOf(CUOTAS_CFG.RESUMEN_WEB_REFERENCIA) >= 0;
   }
