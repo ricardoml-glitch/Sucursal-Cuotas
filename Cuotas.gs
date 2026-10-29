@@ -16,7 +16,7 @@ const CUOTAS_CFG = {
   // Encabezados de VS que lee el script
   VS: {
     fecha: 'Fecha', sucursal: 'Sucursal', pedido: 'Pedido: ID', condicion: 'Condición Comercial',
-    producto: 'Producto', precioUnitario: 'Precio Unitario', cuotas: 'Cobranza 2',
+    producto: 'Producto', precioUnitario: 'Precio Unitario', cobranza: 'Cobranza', cuotas: 'Cobranza 2',
     lista: 'Precio', pvm: 'PVM', canal: 'Canal de venta', referencia: 'Referenia'
   },
 
@@ -38,6 +38,8 @@ const CUOTAS_CFG = {
   // Si la condicion no define base de precio (Precio Minimo y Asignar precio lista en FALSE):
   // 'omitir' = no se controla | 'lista' = contra precio de lista | 'pvm' = contra PVM
   SIN_BASE: 'omitir',
+  CONTROLAR_CUOTAS_NOMBRE: true,           // la cuota que dice el nombre de la condicion debe coincidir con la cobrada (VS col H)
+  PATRON_CUOTAS_NOMBRE: '(\\d+)\\s*cuotas?', // ej. "6 Cuotas Verde", "MP 12 Cuotas"
   TOLERANCIA_PESOS: 1,                     // diferencia aceptada por redondeos
   USAR_REGLA_CUOTAS_SIN_CONDICION: true,   // condiciones que no estan en la hoja: regla anterior por cuotas
 
@@ -185,8 +187,20 @@ function evaluarFila_(f, reglas) {
   return { estado: '', esperado: '', regla: '' };
 }
 
-// Condicion comercial de la hoja: precio esperado = base (lista o PVM) x coeficiente
+// Condicion comercial de la hoja: precio esperado = base (lista o PVM) x coeficiente,
+// y la cuota del nombre de la condicion debe coincidir con la cuota cobrada
 function evaluarPorCondicion_(f, regla) {
+  const precio = evaluarPrecioCondicion_(f, regla);
+  const cuotas = evaluarCuotasNombre_(f, regla);
+  if (cuotas.detalle === '') return precio;
+  return {
+    estado: cuotas.ok ? precio.estado : 'revisar',
+    esperado: precio.esperado,
+    regla: (precio.regla ? precio.regla + ' | ' : '') + cuotas.detalle
+  };
+}
+
+function evaluarPrecioCondicion_(f, regla) {
   let base = null;
   let nombreBase = '';
   if (regla.precioLista) { base = cuotasANumero_(f.lista); nombreBase = 'Lista'; }
@@ -206,6 +220,22 @@ function evaluarPorCondicion_(f, regla) {
   else if (pu <= esperado + CUOTAS_CFG.TOLERANCIA_PESOS) estado = 'ok';
   else estado = 'bien';
   return { estado: estado, esperado: esperado, regla: etiqueta };
+}
+
+// Cuotas que dice el nombre de la condicion vs cuota cobrada (Cobranza 2).
+// Si la cobranza no tiene dato (vacio, X o #N/A) no se puede verificar y no se marca.
+function evaluarCuotasNombre_(f, regla) {
+  const vacio = { ok: true, detalle: '' };
+  if (!CUOTAS_CFG.CONTROLAR_CUOTAS_NOMBRE) return vacio;
+  const m = String(regla.nombre).match(new RegExp(CUOTAS_CFG.PATRON_CUOTAS_NOMBRE, 'i'));
+  if (!m) return vacio;
+  const esperadas = parseInt(m[1], 10);
+  const cobranza = String(f.cobranza === null || f.cobranza === undefined ? '' : f.cobranza).trim().toUpperCase();
+  if (cobranza === '' || cobranza === 'X' || cobranza === '#N/A') return vacio;
+  const cobradas = cuotasANumero_(f.cuotas);
+  if (cobradas === null) return vacio;
+  if (cobradas === esperadas) return { ok: true, detalle: 'Cuotas ' + esperadas + ' ok' };
+  return { ok: false, detalle: 'Cuotas: condicion ' + esperadas + ', cobradas ' + cobradas };
 }
 
 // Regla anterior por cuotas (condiciones que no estan en la hoja)
