@@ -23,7 +23,7 @@ const CUOTAS_CFG = {
   // Columnas de Resumen (A:H). La columna I (hoy/ayer) no se toca.
   ENCABEZADO_RESUMEN: [
     'Fecha', 'Sucursal', 'Pedido: ID', 'Condición Comercial', 'Producto', 'Precio Unitario',
-    'Cobranza 2', 'Canal de venta'
+    'Plan', 'Canal de venta'
   ],
   // Columnas extra de Resumen (J:K), la I (hoy/ayer) no se toca
   COL_EXTRA_RESUMEN: 10,
