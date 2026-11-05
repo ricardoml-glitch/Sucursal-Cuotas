@@ -326,8 +326,9 @@ function evaluarPorCondicion_(f, regla) {
 function evaluarPrecioCondicion_(f, regla) {
   let base = null;
   let nombreBase = '';
-  if (regla.precioLista) { base = cuotasANumero_(f.lista); nombreBase = 'Lista'; }
-  else if (regla.precioMinimo) { base = cuotasANumero_(f.pvm); nombreBase = 'PVM'; }
+  // Si Precio Minimo esta en TRUE la base es el minimo (PVM), aunque Asignar precio lista tambien lo este
+  if (regla.precioMinimo) { base = cuotasANumero_(f.pvm); nombreBase = 'PVM'; }
+  else if (regla.precioLista) { base = cuotasANumero_(f.lista); nombreBase = 'Lista'; }
   else if (CUOTAS_CFG.SIN_BASE === 'lista') { base = cuotasANumero_(f.lista); nombreBase = 'Lista'; }
   else if (CUOTAS_CFG.SIN_BASE === 'pvm') { base = cuotasANumero_(f.pvm); nombreBase = 'PVM'; }
   else return { estado: '', esperado: '', regla: '', aplicado: '' };
