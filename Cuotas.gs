@@ -246,7 +246,7 @@ function cuotasRegistrarDetectados_(ss, filas) {
 
 // ============================ REGLAS ============================
 function cuotasClave_(v) {
-  return String(v === null || v === undefined ? '' : v).trim().toLowerCase();
+  return String(v === null || v === undefined ? '' : v).trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
 function cuotasLeerReglas_(ss) {
