@@ -58,7 +58,7 @@ const CUOTAS_CFG = {
   // 'omitir' = no se controla | 'lista' = contra precio de lista | 'pvm' = contra PVM
   SIN_BASE: 'omitir',
   // Condiciones que no admiten cuotas: maximo de cuotas permitido en el plan cobrado (0 o 1)
-  CONDICIONES_MAX_CUOTAS: { 'Precio Online': 1, 'Debito': 1 },
+  CONDICIONES_MAX_CUOTAS: { 'Precio Online': 1, 'Debito': 1, 'Tarjeta de Credito': 1 },
   CONTROLAR_CUOTAS_NOMBRE: true,           // la cuota que dice el nombre de la condicion debe coincidir con la cobrada (VS col H)
   PATRON_CUOTAS_NOMBRE: '(\\d+)\\s*cuotas?', // ej. "6 Cuotas Verde", "MP 12 Cuotas"
   TOLERANCIA_PESOS: 1,
