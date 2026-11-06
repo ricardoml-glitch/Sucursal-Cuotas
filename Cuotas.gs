@@ -57,6 +57,8 @@ const CUOTAS_CFG = {
   // Si la condicion no define base de precio (Precio Minimo y Asignar precio lista en FALSE):
   // 'omitir' = no se controla | 'lista' = contra precio de lista | 'pvm' = contra PVM
   SIN_BASE: 'omitir',
+  // Condiciones que no admiten cuotas: maximo de cuotas permitido en el plan cobrado (0 o 1)
+  CONDICIONES_MAX_CUOTAS: { 'Precio Online': 1 },
   CONTROLAR_CUOTAS_NOMBRE: true,           // la cuota que dice el nombre de la condicion debe coincidir con la cobrada (VS col H)
   PATRON_CUOTAS_NOMBRE: '(\\d+)\\s*cuotas?', // ej. "6 Cuotas Verde", "MP 12 Cuotas"
   TOLERANCIA_PESOS: 1,
@@ -349,6 +351,15 @@ function evaluarPrecioCondicion_(f, regla) {
   return { estado: estado, esperado: esperado, regla: etiquetaFinal, aplicado: cuotasPorcentajeAplicado_(pu, base, nombreBase) };
 }
 
+function cuotasMaximoCuotas_(nombreCondicion) {
+  const mapa = CUOTAS_CFG.CONDICIONES_MAX_CUOTAS;
+  const k = cuotasClave_(nombreCondicion);
+  for (const nombre in mapa) {
+    if (cuotasClave_(nombre) === k) return mapa[nombre];
+  }
+  return null;
+}
+
 function cuotasToleranciaPorcentaje_(nombreCondicion) {
   const mapa = CUOTAS_CFG.TOLERANCIA_PORCENTAJE;
   const k = cuotasClave_(nombreCondicion);
@@ -372,13 +383,20 @@ function cuotasPorcentajeAplicado_(precio, base, nombreBase) {
 function evaluarCuotasNombre_(f, regla) {
   const vacio = { ok: true, detalle: '' };
   if (!CUOTAS_CFG.CONTROLAR_CUOTAS_NOMBRE) return vacio;
-  const m = String(regla.nombre).match(new RegExp(CUOTAS_CFG.PATRON_CUOTAS_NOMBRE, 'i'));
-  if (!m) return vacio;
-  const esperadas = parseInt(m[1], 10);
   const cobranza = String(f.cobranza === null || f.cobranza === undefined ? '' : f.cobranza).trim().toUpperCase();
   if (cobranza === '' || cobranza === 'X' || cobranza === '#N/A') return vacio;
   const cobradas = cuotasANumero_(f.cuotas);
   if (cobradas === null) return vacio;
+
+  // Condiciones que no admiten cuotas (ej. Precio Online: maximo 1)
+  const max = cuotasMaximoCuotas_(regla.nombre);
+  if (max !== null) {
+    return cobradas <= max ? vacio : { ok: false, detalle: 'Cuotas: ' + regla.nombre + ' admite hasta ' + max + ', cobradas ' + cobradas };
+  }
+
+  const m = String(regla.nombre).match(new RegExp(CUOTAS_CFG.PATRON_CUOTAS_NOMBRE, 'i'));
+  if (!m) return vacio;
+  const esperadas = parseInt(m[1], 10);
   if (cobradas === esperadas) return { ok: true, detalle: 'Cuotas ' + esperadas + ' ok' };
   return { ok: false, detalle: 'Cuotas: condicion ' + esperadas + ', cobradas ' + cobradas };
 }
