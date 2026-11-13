@@ -167,6 +167,19 @@ function cuotasLeerVS_(ss, reglas) {
     }
     const reglasFila = {};
     if (regla) reglasFila[cond] = regla;
+    // Regla de la condicion que debieron usar (ej. GoCuotas), tambien congelada al detectar
+    const req = cuotasCondicionRequerida_(fila);
+    if (req) {
+      const condReq = cuotasClave_(req.condicion);
+      const claveReq = cuotasClave_(fila.pedido) + '||' + cuotasClave_(fila.producto) + '||' + condReq;
+      let reglaReq = snapshots[claveReq];
+      if (!reglaReq && reglas[condReq]) {
+        reglaReq = reglas[condReq];
+        snapshots[claveReq] = reglaReq;
+        nuevos.push([claveReq, reglaReq.nombre, reglaReq.precioMinimo, reglaReq.precioLista, reglaReq.coeficiente === null ? '' : reglaReq.coeficiente, new Date()]);
+      }
+      if (reglaReq) reglasFila[condReq] = reglaReq;
+    }
     Object.assign(fila, evaluarFila_(fila, reglasFila));
     fila.clave = clave;
     filas.push(fila);
@@ -294,28 +307,39 @@ function cuotasANumero_(v) {
  */
 function evaluarFila_(f, reglas) {
   const res = evaluarFilaBase_(f, reglas);
-  const cob = evaluarCobranzaAuto_(f);
-  if (cob === '') return res;
+  const req = cuotasCondicionRequerida_(f);
+  if (!req) return res;
+  const detalle = 'Cobranza ' + req.cobranza + ' pero condicion "' + f.condicion + '" (debe ser ' + req.condicion + ')';
+  // Precio esperado segun la condicion que debieron usar (ej. GoCuotas con su recargo)
+  const reglaReq = reglas[cuotasClave_(req.condicion)];
+  const precioReq = reglaReq ? evaluarPrecioCondicion_(f, reglaReq) : null;
+  if (precioReq && precioReq.esperado !== '') {
+    return {
+      estado: 'revisar',
+      esperado: precioReq.esperado,
+      regla: 'Debio ser ' + req.condicion + ': ' + precioReq.regla + ' | ' + detalle,
+      aplicado: precioReq.aplicado || ''
+    };
+  }
   return {
     estado: 'revisar',
     esperado: res.esperado,
-    regla: (res.regla ? res.regla + ' | ' : '') + cob,
+    regla: (res.regla ? res.regla + ' | ' : '') + detalle,
     aplicado: res.aplicado || ''
   };
 }
 
-// Cobranza automatica (VS G) de un medio (ej. GOCuotas) con otra condicion comercial: se evitaria el recargo
-function evaluarCobranzaAuto_(f) {
-  if (cuotasEsNoAnalizar_(f)) return '';
+// Cobranza automatica (VS G) de un medio (ej. GOCuotas) con otra condicion comercial: se evitaria el recargo.
+// Devuelve el par { cobranza, condicion } que corresponde, o null
+function cuotasCondicionRequerida_(f) {
+  if (cuotasEsNoAnalizar_(f)) return null;
   const g = cuotasClave_(f.cobranzaAuto);
-  if (g === '') return '';
+  if (g === '') return null;
   for (let i = 0; i < CUOTAS_CFG.COBRANZA_AUTO_CONDICION.length; i++) {
     const p = CUOTAS_CFG.COBRANZA_AUTO_CONDICION[i];
-    if (g.indexOf(cuotasClave_(p.cobranza)) >= 0 && cuotasClave_(f.condicion).indexOf(cuotasClave_(p.condicion)) < 0) {
-      return 'Cobranza ' + p.cobranza + ' pero condicion "' + f.condicion + '" (debe ser ' + p.condicion + ')';
-    }
+    if (g.indexOf(cuotasClave_(p.cobranza)) >= 0 && cuotasClave_(f.condicion).indexOf(cuotasClave_(p.condicion)) < 0) return p;
   }
-  return '';
+  return null;
 }
 
 function cuotasEsNoAnalizar_(f) {
