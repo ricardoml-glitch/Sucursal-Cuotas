@@ -16,7 +16,7 @@ const CUOTAS_CFG = {
   // Encabezados de VS que lee el script
   VS: {
     fecha: 'Fecha', sucursal: 'Sucursal', pedido: 'Pedido: ID', condicion: 'Condición Comercial',
-    producto: 'Producto', precioUnitario: 'Precio Unitario', cobranza: 'Cobranza', cuotas: 'Cobranza 2',
+    producto: 'Producto', precioUnitario: 'Precio Unitario', cobranza: 'Cobranza', cuotas: 'Cobranza 2', cobranzaAuto: 'Cobranza Automática: ID Cobranza',
     lista: 'Precio', pvm: 'PVM', canal: 'Canal de venta', referencia: 'Referenia'
   },
 
@@ -59,6 +59,8 @@ const CUOTAS_CFG = {
   SIN_BASE: 'omitir',
   // Condiciones que no admiten cuotas: maximo de cuotas permitido en el plan cobrado (0 o 1)
   CONDICIONES_MAX_CUOTAS: { 'Precio Online': 1, 'Debito': 1, 'Tarjeta de Credito': 1 },
+  // Si la cobranza automatica (VS G) es de este medio, la condicion comercial debe ser la de ese medio
+  COBRANZA_AUTO_CONDICION: [{ cobranza: 'GOCuotas', condicion: 'GoCuotas' }],
   CONTROLAR_CUOTAS_NOMBRE: true,           // la cuota que dice el nombre de la condicion debe coincidir con la cobrada (VS col H)
   PATRON_CUOTAS_NOMBRE: '(\\d+)\\s*cuotas?', // ej. "6 Cuotas Verde", "MP 12 Cuotas"
   TOLERANCIA_PESOS: 1,
@@ -291,6 +293,42 @@ function cuotasANumero_(v) {
  * Devuelve { estado: '' | 'ok' | 'bien' | 'revisar', esperado, regla }.
  */
 function evaluarFila_(f, reglas) {
+  const res = evaluarFilaBase_(f, reglas);
+  const cob = evaluarCobranzaAuto_(f);
+  if (cob === '') return res;
+  return {
+    estado: 'revisar',
+    esperado: res.esperado,
+    regla: (res.regla ? res.regla + ' | ' : '') + cob,
+    aplicado: res.aplicado || ''
+  };
+}
+
+// Cobranza automatica (VS G) de un medio (ej. GOCuotas) con otra condicion comercial: se evitaria el recargo
+function evaluarCobranzaAuto_(f) {
+  if (cuotasEsNoAnalizar_(f)) return '';
+  const g = cuotasClave_(f.cobranzaAuto);
+  if (g === '') return '';
+  for (let i = 0; i < CUOTAS_CFG.COBRANZA_AUTO_CONDICION.length; i++) {
+    const p = CUOTAS_CFG.COBRANZA_AUTO_CONDICION[i];
+    if (g.indexOf(cuotasClave_(p.cobranza)) >= 0 && cuotasClave_(f.condicion).indexOf(cuotasClave_(p.condicion)) < 0) {
+      return 'Cobranza ' + p.cobranza + ' pero condicion "' + f.condicion + '" (debe ser ' + p.condicion + ')';
+    }
+  }
+  return '';
+}
+
+function cuotasEsNoAnalizar_(f) {
+  return CUOTAS_CFG.CONDICIONES_NO_ANALIZAR.some(function (c) {
+    return cuotasClave_(c) === cuotasClave_(f.condicion);
+  }) || CUOTAS_CFG.SUCURSALES_NO_ANALIZAR.some(function (s) {
+    return cuotasClave_(s) === cuotasClave_(f.sucursal);
+  }) || CUOTAS_CFG.CANAL_CONDICION_NO_ANALIZAR.some(function (p) {
+    return cuotasClave_(p.canal) === cuotasClave_(f.canal) && cuotasClave_(p.condicion) === cuotasClave_(f.condicion);
+  });
+}
+
+function evaluarFilaBase_(f, reglas) {
   const noAnalizar = CUOTAS_CFG.CONDICIONES_NO_ANALIZAR.some(function (c) {
     return cuotasClave_(c) === cuotasClave_(f.condicion);
   }) || CUOTAS_CFG.SUCURSALES_NO_ANALIZAR.some(function (s) {
