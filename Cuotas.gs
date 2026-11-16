@@ -58,7 +58,12 @@ const CUOTAS_CFG = {
   // 'omitir' = no se controla | 'lista' = contra precio de lista | 'pvm' = contra PVM
   SIN_BASE: 'omitir',
   // Condiciones que no admiten cuotas: maximo de cuotas permitido en el plan cobrado (0 o 1)
-  CONDICIONES_MAX_CUOTAS: { 'Precio Online': 1, 'Debito': 1, 'Tarjeta de Credito': 1 },
+  // Un numero fijo, o una lista de vigencias { desde: 'yyyy-mm-dd', max } segun la fecha del pedido (no es retroactivo)
+  CONDICIONES_MAX_CUOTAS: {
+    'Precio Online': 1,
+    'Debito': 1,
+    'Tarjeta de Credito': [{ desde: '2000-01-01', max: 1 }, { desde: '2026-11-16', max: 6 }]
+  },
   // Si la cobranza automatica (VS G) es de este medio, la condicion comercial debe ser la de ese medio
   COBRANZA_AUTO_CONDICION: [{ cobranza: 'GOCuotas', condicion: 'GoCuotas' }],
   CONTROLAR_CUOTAS_NOMBRE: true,           // la cuota que dice el nombre de la condicion debe coincidir con la cobrada (VS col H)
@@ -413,13 +418,28 @@ function evaluarPrecioCondicion_(f, regla) {
   return { estado: estado, esperado: esperado, regla: etiquetaFinal, aplicado: cuotasPorcentajeAplicado_(pu, base, nombreBase) };
 }
 
-function cuotasMaximoCuotas_(nombreCondicion) {
+function cuotasMaximoCuotas_(nombreCondicion, fecha) {
   const mapa = CUOTAS_CFG.CONDICIONES_MAX_CUOTAS;
   const k = cuotasClave_(nombreCondicion);
   for (const nombre in mapa) {
-    if (cuotasClave_(nombre) === k) return mapa[nombre];
+    if (cuotasClave_(nombre) !== k) continue;
+    const v = mapa[nombre];
+    if (!Array.isArray(v)) return v;
+    const dia = cuotasFechaTexto_(fecha);
+    let max = null;
+    v.slice().sort(function (a, b) { return a.desde < b.desde ? -1 : 1; }).forEach(function (p) {
+      if (dia === '' || p.desde <= dia) max = p.max;
+    });
+    return max;
   }
   return null;
+}
+
+// Fecha del pedido como yyyy-mm-dd (zona horaria del script)
+function cuotasFechaTexto_(d) {
+  if (!(d instanceof Date) || isNaN(d.getTime())) return '';
+  const p = function (n) { return (n < 10 ? '0' : '') + n; };
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
 }
 
 function cuotasToleranciaPorcentaje_(nombreCondicion) {
@@ -451,7 +471,7 @@ function evaluarCuotasNombre_(f, regla) {
   if (cobradas === null) return vacio;
 
   // Condiciones que no admiten cuotas (ej. Precio Online: maximo 1)
-  const max = cuotasMaximoCuotas_(regla.nombre);
+  const max = cuotasMaximoCuotas_(regla.nombre, f.fecha);
   if (max !== null) {
     return cobradas <= max ? vacio : { ok: false, detalle: 'Cuotas: ' + regla.nombre + ' admite hasta ' + max + ', cobradas ' + cobradas };
   }
