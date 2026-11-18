@@ -23,7 +23,7 @@ const QR_TOLERANCIA = 0.0001;
 const QR_EMAIL_TO = 'ricardoml@tiomusa.com.ar';
 const QR_ASUNTO = '⚠️ QR mal cobrado';
 
-// Hoja "Revisar Cupones": TODOS los pedidos, con check (columnas base 1)
+// Hoja "Revisar Cupones": pedidos con descuento aplicado, con check (columnas base 1)
 const QR_HEADER_FECHA = 'Fecha pedido';
 const QR_HEADER_SUCURSAL = 'Sucursal';
 const QR_REVIEW_HEADERS = ['Revisado', 'Pedido: ID', QR_HEADER_FECHA, QR_HEADER_SUCURSAL, 'Total pedido', 'Descuento total',
@@ -54,7 +54,7 @@ const QR_HANDLER = 'revisarQRMercadopago';
 // ===========================================================================
 
 // Ejecutar a mano o por disparador:
-// - "Revisar Cupones": agrega todos los pedidos nuevos (una sola vez cada uno)
+// - "Revisar Cupones": agrega los pedidos nuevos que aplicaron descuento (una sola vez cada uno)
 // - "QR mal cobrado": agrega los pedidos que no cumplen las reglas (una sola vez cada uno)
 //   y avisa por mail (un solo mail con todos los nuevos)
 function revisarQRMercadopago() {
@@ -139,7 +139,8 @@ function revisarQRMercadopago() {
       const filasTexto = p.filas.join(', ');
       const sucursalTexto = p.sucursales.join(', ');
 
-      if (!registradosRev.has(id)) {
+      // Revisar Cupones: solo los pedidos que aplicaron descuento
+      if (descuento > QR_TOLERANCIA && !registradosRev.has(id)) {
         registradosRev.add(id);
         filasRev.push([false, id, p.fecha, sucursalTexto, total, descuento, motivoTexto, filasTexto, ahora]);
       }
