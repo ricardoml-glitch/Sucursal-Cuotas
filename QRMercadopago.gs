@@ -1,6 +1,7 @@
 // ===================== CONFIG (revisión QR Mercadopago) =====================
 const QR_SHEET_NAME = 'QR Mercadopago';
-const QR_REVIEW_SHEET_NAME = 'Revisar Cupones';
+const QR_REVIEW_SHEET_NAME = 'QR Descuento a revisar';
+const QR_REVIEW_SHEET_NAME_ANTERIOR = 'Revisar Cupones';   // si existe con este nombre, se renombra (conserva los datos)
 const QR_MAL_SHEET_NAME = 'QR mal cobrado';
 const QR_FIRST_DATA_ROW = 2;
 const QR_NUM_COLS = 9;                // A..I de "QR Mercadopago"
@@ -23,7 +24,7 @@ const QR_TOLERANCIA = 0.0001;
 const QR_EMAIL_TO = 'ricardoml@tiomusa.com.ar';
 const QR_ASUNTO = '⚠️ QR mal cobrado';
 
-// Hoja "Revisar Cupones": pedidos con descuento aplicado, con check (columnas base 1)
+// Hoja "QR Descuento a revisar": pedidos con descuento aplicado, con check (columnas base 1)
 const QR_HEADER_FECHA = 'Fecha pedido';
 const QR_HEADER_SUCURSAL = 'Sucursal';
 const QR_REVIEW_HEADERS = ['Revisado', 'Pedido: ID', QR_HEADER_FECHA, QR_HEADER_SUCURSAL, 'Total pedido', 'Descuento total',
@@ -54,7 +55,7 @@ const QR_HANDLER = 'revisarQRMercadopago';
 // ===========================================================================
 
 // Ejecutar a mano o por disparador:
-// - "Revisar Cupones": agrega los pedidos nuevos que aplicaron descuento (una sola vez cada uno)
+// - "QR Descuento a revisar": agrega los pedidos nuevos que aplicaron descuento (una sola vez cada uno)
 // - "QR mal cobrado": agrega los pedidos que no cumplen las reglas (una sola vez cada uno)
 //   y avisa por mail (un solo mail con todos los nuevos)
 function revisarQRMercadopago() {
@@ -71,6 +72,10 @@ function revisarQRMercadopago() {
       console.error('revisarQRMercadopago: no existe la hoja "' + QR_SHEET_NAME + '".');
       return;
     }
+
+    // Hoja de revision con el nombre anterior: se renombra para no perder lo ya revisado
+    const anterior = ss.getSheetByName(QR_REVIEW_SHEET_NAME_ANTERIOR);
+    if (anterior && !ss.getSheetByName(QR_REVIEW_SHEET_NAME)) anterior.setName(QR_REVIEW_SHEET_NAME);
 
     const review = obtenerHojaQR_(ss, QR_REVIEW_SHEET_NAME, QR_REVIEW_HEADERS);
     const mal = obtenerHojaQR_(ss, QR_MAL_SHEET_NAME, QR_MAL_HEADERS);
@@ -139,7 +144,7 @@ function revisarQRMercadopago() {
       const filasTexto = p.filas.join(', ');
       const sucursalTexto = p.sucursales.join(', ');
 
-      // Revisar Cupones: solo los pedidos que aplicaron descuento
+      // QR Descuento a revisar: solo los pedidos que aplicaron descuento
       if (descuento > QR_TOLERANCIA && !registradosRev.has(id)) {
         registradosRev.add(id);
         filasRev.push([false, id, p.fecha, sucursalTexto, total, descuento, motivoTexto, filasTexto, ahora]);
@@ -163,7 +168,7 @@ function revisarQRMercadopago() {
       }
     }
 
-    // --- Escribir "Revisar Cupones" ---
+    // --- Escribir "QR Descuento a revisar" ---
     if (filasRev.length > 0) {
       const start = Math.max(review.getLastRow(), QR_FIRST_DATA_ROW - 1) + 1;
       review.getRange(start, 1, filasRev.length, QR_REV_NUM_COLS).setValues(filasRev);
