@@ -30,10 +30,14 @@ function evaluarCondicionesComerciales() {
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const sheetOrigen = ss.getSheetByName(EV_SHEET_ORIGEN);
-    const sheetDestino = ss.getSheetByName(EV_SHEET_DESTINO);
+    // "Total" lo genera este script: si no existe se crea
+    const sheetDestino = ss.getSheetByName(EV_SHEET_DESTINO) || ss.insertSheet(EV_SHEET_DESTINO);
     const sheetCC = ss.getSheetByName(EV_SHEET_CC);
-    if (!sheetOrigen || !sheetDestino || !sheetCC) {
-      console.log('evaluarCondicionesComerciales: faltan hojas (' + EV_SHEET_ORIGEN + ' / ' + EV_SHEET_DESTINO + ' / ' + EV_SHEET_CC + '), se omite.');
+    const faltan = [];
+    if (!sheetOrigen) faltan.push(EV_SHEET_ORIGEN);
+    if (!sheetCC) faltan.push(EV_SHEET_CC);
+    if (faltan.length > 0) {
+      console.log('evaluarCondicionesComerciales: faltan hojas (' + faltan.join(' / ') + '), se omite.');
       return;
     }
 

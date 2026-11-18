@@ -103,10 +103,10 @@ function vrProcesar_(enviarMail) {
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const tz = ss.getSpreadsheetTimeZone();
-    sheet = ss.getSheetByName(VR_SHEET_NAME);
+    sheet = ss.getSheetByName(VR_SHEET_NAME) || ss.insertSheet(VR_SHEET_NAME);
     const total = ss.getSheetByName(VR_TOTAL_SHEET_NAME);
-    if (!sheet || !total) {
-      console.log('Ventas para Revisar: faltan hojas ("' + VR_SHEET_NAME + '" / "' + VR_TOTAL_SHEET_NAME + '"), se omite.');
+    if (!total) {
+      console.log('Ventas para Revisar: falta la hoja "' + VR_TOTAL_SHEET_NAME + '" (la genera evaluarCondicionesComerciales), se omite.');
       return;
     }
 
