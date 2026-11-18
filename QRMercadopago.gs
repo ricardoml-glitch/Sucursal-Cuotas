@@ -14,6 +14,13 @@ const QR_IDX_PRECIO = 3;              // D: Precio Unitario
 const QR_IDX_DESCUENTO = 4;           // E: Importe Descuento
 const QR_IDX_PCT_DESCUENTO = 5;       // F: % Descuento
 
+// Hoja "Cobranzas Descuento QR MP": pedidos que Mercadopago registra con descuento (sale directo de Mercadopago)
+const QR_MP_SHEET_NAME = 'Cobranzas Descuento QR MP';
+const QR_MP_HEADER_PEDIDO = 'Pedido: ID';
+const QR_MP_IDX_PEDIDO_DEFAULT = 0;   // A, si no se encuentra el encabezado
+// Un pedido con descuento que no figura en esa hoja se revisa recien pasados estos dias (el informe de Mercadopago puede demorar)
+const QR_DIAS_ESPERA_MP = 1;
+
 // Reglas
 const QR_MIN_PEDIDO = 300000;         // el descuento corresponde desde este monto (inclusive)
 const QR_MAX_DESCUENTO = 30000;       // tope de descuento por pedido
@@ -24,7 +31,7 @@ const QR_TOLERANCIA = 0.0001;
 const QR_EMAIL_TO = 'ricardoml@tiomusa.com.ar';
 const QR_ASUNTO = '⚠️ QR mal cobrado';
 
-// Hoja "QR Descuento a revisar": pedidos con descuento aplicado, con check (columnas base 1)
+// Hoja "QR Descuento a revisar": pedidos con descuento que Mercadopago no registra, con check (columnas base 1)
 const QR_HEADER_FECHA = 'Fecha pedido';
 const QR_HEADER_SUCURSAL = 'Sucursal';
 const QR_REVIEW_HEADERS = ['Revisado', 'Pedido: ID', QR_HEADER_FECHA, QR_HEADER_SUCURSAL, 'Total pedido', 'Descuento total',
@@ -55,7 +62,8 @@ const QR_HANDLER = 'revisarQRMercadopago';
 // ===========================================================================
 
 // Ejecutar a mano o por disparador:
-// - "QR Descuento a revisar": agrega los pedidos nuevos que aplicaron descuento (una sola vez cada uno)
+// - "QR Descuento a revisar": agrega los pedidos que en "QR Mercadopago" tienen descuento pero no figuran
+//   en "Cobranzas Descuento QR MP" (una sola vez cada uno)
 // - "QR mal cobrado": agrega los pedidos que no cumplen las reglas (una sola vez cada uno)
 //   y avisa por mail (un solo mail con todos los nuevos)
 function revisarQRMercadopago() {
@@ -115,6 +123,13 @@ function revisarQRMercadopago() {
     asegurarColumnaQR_(mal, QR_MAL_COL_PEDIDO, QR_MAL_COL_PEDIDO, QR_HEADER_FECHA, pedidos, function (p) { return p.fecha; }, QR_FORMATO_FECHA_PEDIDO);
     asegurarColumnaQR_(mal, QR_MAL_COL_PEDIDO, QR_MAL_COL_FECHA, QR_HEADER_SUCURSAL, pedidos, function (p) { return p.sucursales.join(', '); }, null);
 
+    // --- Pedidos con descuento en Mercadopago (hoja directa de Mercadopago) ---
+    const enMP = leerPedidosMercadopagoQR_(ss);
+    if (enMP === null) {
+      console.error('revisarQRMercadopago: no se puede verificar el descuento contra "' + QR_MP_SHEET_NAME +
+                    '" (falta la hoja o no tiene datos). No se agregan pedidos a "' + QR_REVIEW_SHEET_NAME + '".');
+    }
+
     // --- Pedidos ya cargados en cada hoja (tildados o no): no se repiten ---
     const registradosRev = leerPedidosRegistradosQR_(review, QR_REV_COL_PEDIDO);
     const registradosMal = leerPedidosRegistradosQR_(mal, QR_MAL_COL_PEDIDO);
@@ -144,10 +159,12 @@ function revisarQRMercadopago() {
       const filasTexto = p.filas.join(', ');
       const sucursalTexto = p.sucursales.join(', ');
 
-      // QR Descuento a revisar: solo los pedidos que aplicaron descuento
-      if (descuento > QR_TOLERANCIA && !registradosRev.has(id)) {
+      // QR Descuento a revisar: pedidos que en "QR Mercadopago" dicen tener descuento pero Mercadopago no lo registra
+      if (enMP !== null && descuento > QR_TOLERANCIA && !enMP.has(id) &&
+          !registradosRev.has(id) && pasoEsperaMPQR_(p.fecha, ahora)) {
         registradosRev.add(id);
-        filasRev.push([false, id, p.fecha, sucursalTexto, total, descuento, motivoTexto, filasTexto, ahora]);
+        const motivoRev = (motivoTexto ? motivoTexto + ' | ' : '') + 'No figura en "' + QR_MP_SHEET_NAME + '"';
+        filasRev.push([false, id, p.fecha, sucursalTexto, total, descuento, motivoRev, filasTexto, ahora]);
       }
       if (motivos.length > 0 && !registradosMal.has(id)) {
         registradosMal.add(id);
@@ -274,6 +291,29 @@ function obtenerHojaQR_(ss, nombre, headers) {
     hoja.setFrozenRows(1);
   }
   return hoja;
+}
+
+// Pedidos de la hoja de Mercadopago (Set). null si la hoja no existe o no tiene datos (no se puede verificar)
+function leerPedidosMercadopagoQR_(ss) {
+  const hoja = ss.getSheetByName(QR_MP_SHEET_NAME);
+  if (!hoja) return null;
+  const last = hoja.getLastRow();
+  if (last < QR_FIRST_DATA_ROW) return null;
+  const ancho = Math.max(hoja.getLastColumn ? hoja.getLastColumn() : 1, 1);
+  const enc = hoja.getRange(1, 1, 1, ancho).getValues()[0].map(function (h) { return String(h).trim(); });
+  const idx = enc.indexOf(QR_MP_HEADER_PEDIDO) >= 0 ? enc.indexOf(QR_MP_HEADER_PEDIDO) : QR_MP_IDX_PEDIDO_DEFAULT;
+  const set = new Set();
+  hoja.getRange(QR_FIRST_DATA_ROW, idx + 1, last - QR_FIRST_DATA_ROW + 1, 1).getValues().forEach(function (r) {
+    const v = String(r[0]).trim();
+    if (v) set.add(v);
+  });
+  return set;
+}
+
+// true si el pedido ya tiene QR_DIAS_ESPERA_MP dias (o si no se sabe su fecha)
+function pasoEsperaMPQR_(fecha, ahora) {
+  if (!(fecha instanceof Date) || isNaN(fecha.getTime())) return true;
+  return (ahora.getTime() - fecha.getTime()) >= QR_DIAS_ESPERA_MP * 24 * 60 * 60 * 1000;
 }
 
 function leerPedidosRegistradosQR_(hoja, colPedido) {
