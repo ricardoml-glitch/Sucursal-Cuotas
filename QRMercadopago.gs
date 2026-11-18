@@ -203,6 +203,19 @@ function enviarMailMalCobradoQR_(filas) {
   });
 }
 
+// Ejecutar UNA sola vez a mano: deja el disparador automatico de QR Mercadopago
+// (instalarTriggersRevision tambien lo instala, junto con el de Ventas para Revisar)
+function crearTriggerQRMercadopago() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === QR_HANDLER) ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger(QR_HANDLER)
+    .timeBased()
+    .everyHours(QR_TRIGGER_CADA_HORAS)
+    .create();
+  console.log('Trigger creado: ' + QR_HANDLER + ' cada ' + QR_TRIGGER_CADA_HORAS + ' horas.');
+}
+
 // Hojas creadas antes de agregar la columna Sucursal: la inserta al lado del pedido y completa las filas existentes
 function asegurarColumnaSucursalQR_(hoja, colPedido, pedidos) {
   const colSuc = colPedido + 1;
