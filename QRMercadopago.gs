@@ -1,0 +1,261 @@
+// ===================== CONFIG (revisión QR Mercadopago) =====================
+const QR_SHEET_NAME = 'QR Mercadopago';
+const QR_REVIEW_SHEET_NAME = 'Revisar Cupones';
+const QR_MAL_SHEET_NAME = 'QR mal cobrado';
+const QR_FIRST_DATA_ROW = 2;
+const QR_NUM_COLS = 8;                // A..H de "QR Mercadopago"
+
+// Columnas de "QR Mercadopago" (base 0: A=0, B=1, ...)
+const QR_IDX_PEDIDO = 0;              // A: Pedido: ID
+const QR_IDX_SUCURSAL = 1;            // B: Sucursal
+const QR_IDX_PRECIO = 2;              // C: Precio Unitario
+const QR_IDX_DESCUENTO = 3;           // D: Importe Descuento
+const QR_IDX_PCT_DESCUENTO = 4;       // E: % Descuento
+
+// Reglas
+const QR_MIN_PEDIDO = 300000;         // el descuento corresponde desde este monto (inclusive)
+const QR_MAX_DESCUENTO = 30000;       // tope de descuento por pedido
+const QR_PCT_ESPERADO = 0;            // % Descuento siempre en 0
+const QR_TOLERANCIA = 0.0001;
+
+// Mail de alerta
+const QR_EMAIL_TO = 'ricardoml@tiomusa.com.ar';
+const QR_ASUNTO = '⚠️ QR mal cobrado';
+
+// Hoja "Revisar Cupones": TODOS los pedidos, con check (columnas base 1)
+const QR_HEADER_SUCURSAL = 'Sucursal';
+const QR_REVIEW_HEADERS = ['Revisado', 'Pedido: ID', QR_HEADER_SUCURSAL, 'Total pedido', 'Descuento total',
+                           'Motivo', 'Filas en QR Mercadopago', 'Detectado'];
+const QR_REV_COL_CHECK = 1;           // A
+const QR_REV_COL_PEDIDO = 2;          // B
+const QR_REV_COL_SUCURSAL = 3;        // C
+const QR_REV_COL_TOTAL = 4;           // D (D y E llevan formato de monto)
+const QR_REV_NUM_COLS = 8;            // A..H (la última es la fecha)
+
+// Hoja "QR mal cobrado": solo pedidos que no cumplen las reglas
+const QR_MAL_HEADERS = ['Pedido: ID', QR_HEADER_SUCURSAL, 'Total pedido', 'Descuento total',
+                        'Motivo', 'Filas en QR Mercadopago', 'Detectado'];
+const QR_MAL_COL_PEDIDO = 1;          // A
+const QR_MAL_COL_SUCURSAL = 2;        // B
+const QR_MAL_COL_TOTAL = 3;           // C (C y D llevan formato de monto)
+const QR_MAL_NUM_COLS = 7;            // A..G (la última es la fecha)
+
+const QR_FORMATO_MONTO = '#,##0.00';
+const QR_FORMATO_FECHA = 'dd/MM/yyyy HH:mm';
+
+const QR_LOCK_TIMEOUT_MS = 30000;
+const QR_TRIGGER_CADA_HORAS = 3;
+const QR_HANDLER = 'revisarQRMercadopago';
+// ===========================================================================
+
+// Ejecutar a mano o por disparador:
+// - "Revisar Cupones": agrega todos los pedidos nuevos (una sola vez cada uno)
+// - "QR mal cobrado": agrega los pedidos que no cumplen las reglas (una sola vez cada uno)
+//   y avisa por mail (un solo mail con todos los nuevos)
+function revisarQRMercadopago() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(QR_LOCK_TIMEOUT_MS)) {
+    console.log('revisarQRMercadopago: no se pudo obtener el lock, se omite esta ejecución.');
+    return;
+  }
+
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(QR_SHEET_NAME);
+    if (!sheet) {
+      console.error('revisarQRMercadopago: no existe la hoja "' + QR_SHEET_NAME + '".');
+      return;
+    }
+
+    const review = obtenerHojaQR_(ss, QR_REVIEW_SHEET_NAME, QR_REVIEW_HEADERS);
+    const mal = obtenerHojaQR_(ss, QR_MAL_SHEET_NAME, QR_MAL_HEADERS);
+
+    const lastRow = sheet.getLastRow();
+    if (lastRow < QR_FIRST_DATA_ROW) {
+      console.log('revisarQRMercadopago: "' + QR_SHEET_NAME + '" no tiene datos.');
+      return;
+    }
+    const data = sheet.getRange(QR_FIRST_DATA_ROW, 1, lastRow - QR_FIRST_DATA_ROW + 1, QR_NUM_COLS).getValues();
+
+    // --- Agrupar por pedido ---
+    const pedidos = new Map();
+    for (let i = 0; i < data.length; i++) {
+      const f = data[i];
+      const id = String(f[QR_IDX_PEDIDO]).trim();
+      if (!id) continue;
+
+      if (!pedidos.has(id)) {
+        pedidos.set(id, { total: 0, descuento: 0, pctDistinto: false, filas: [], sucursales: [] });
+      }
+      const p = pedidos.get(id);
+      p.total += numeroQR_(f[QR_IDX_PRECIO]);
+      p.descuento += numeroQR_(f[QR_IDX_DESCUENTO]);
+      if (Math.abs(numeroQR_(f[QR_IDX_PCT_DESCUENTO]) - QR_PCT_ESPERADO) > QR_TOLERANCIA) {
+        p.pctDistinto = true;
+      }
+      const suc = String(f[QR_IDX_SUCURSAL] === null || f[QR_IDX_SUCURSAL] === undefined ? '' : f[QR_IDX_SUCURSAL]).trim();
+      if (suc && p.sucursales.indexOf(suc) === -1) p.sucursales.push(suc);
+      p.filas.push(QR_FIRST_DATA_ROW + i);
+    }
+
+    // --- Hojas que ya existian sin la columna Sucursal: se agrega y se completa ---
+    asegurarColumnaSucursalQR_(review, QR_REV_COL_PEDIDO, pedidos);
+    asegurarColumnaSucursalQR_(mal, QR_MAL_COL_PEDIDO, pedidos);
+
+    // --- Pedidos ya cargados en cada hoja (tildados o no): no se repiten ---
+    const registradosRev = leerPedidosRegistradosQR_(review, QR_REV_COL_PEDIDO);
+    const registradosMal = leerPedidosRegistradosQR_(mal, QR_MAL_COL_PEDIDO);
+
+    // --- Evaluar reglas y armar filas nuevas para cada hoja ---
+    const ahora = new Date();
+    const filasRev = [];
+    let filasMal = [];
+    pedidos.forEach(function (p, id) {
+      const total = redondearQR_(p.total);
+      const descuento = redondearQR_(p.descuento);
+      const motivos = [];
+
+      if (p.pctDistinto) {
+        motivos.push('% Descuento distinto de 0');
+      }
+      if (descuento > QR_MAX_DESCUENTO + QR_TOLERANCIA) {
+        motivos.push('Descuento total $' + formatearMontoQR_(descuento) +
+                     ' supera el tope de $' + formatearMontoQR_(QR_MAX_DESCUENTO));
+      }
+      if (descuento > QR_TOLERANCIA && total < QR_MIN_PEDIDO) {
+        motivos.push('Tiene descuento pero el pedido ($' + formatearMontoQR_(total) +
+                     ') no llega a $' + formatearMontoQR_(QR_MIN_PEDIDO));
+      }
+
+      const motivoTexto = motivos.join(' | ');
+      const filasTexto = p.filas.join(', ');
+      const sucursalTexto = p.sucursales.join(', ');
+
+      if (!registradosRev.has(id)) {
+        registradosRev.add(id);
+        filasRev.push([false, id, sucursalTexto, total, descuento, motivoTexto, filasTexto, ahora]);
+      }
+      if (motivos.length > 0 && !registradosMal.has(id)) {
+        registradosMal.add(id);
+        filasMal.push([id, sucursalTexto, total, descuento, motivoTexto, filasTexto, ahora]);
+      }
+    });
+
+    // --- Un solo mail con todos los mal cobrados nuevos ---
+    // Si el mail falla, no se guardan en "QR mal cobrado" y se reintenta en la próxima ejecución
+    if (filasMal.length > 0) {
+      try {
+        enviarMailMalCobradoQR_(filasMal);
+        console.log('revisarQRMercadopago: mail enviado con ' + filasMal.length + ' pedido(s) mal cobrado(s).');
+      } catch (e) {
+        console.error('revisarQRMercadopago: error enviando el mail: ' + e.message +
+                      '. No se guardan en "' + QR_MAL_SHEET_NAME + '"; se reintenta en la próxima ejecución.');
+        filasMal = [];
+      }
+    }
+
+    // --- Escribir "Revisar Cupones" ---
+    if (filasRev.length > 0) {
+      const start = Math.max(review.getLastRow(), QR_FIRST_DATA_ROW - 1) + 1;
+      review.getRange(start, 1, filasRev.length, QR_REV_NUM_COLS).setValues(filasRev);
+      review.getRange(start, QR_REV_COL_CHECK, filasRev.length, 1).insertCheckboxes();
+      review.getRange(start, QR_REV_COL_TOTAL, filasRev.length, 2).setNumberFormat(QR_FORMATO_MONTO);
+      review.getRange(start, QR_REV_NUM_COLS, filasRev.length, 1).setNumberFormat(QR_FORMATO_FECHA);
+    }
+
+    // --- Escribir "QR mal cobrado" ---
+    if (filasMal.length > 0) {
+      const start = Math.max(mal.getLastRow(), QR_FIRST_DATA_ROW - 1) + 1;
+      mal.getRange(start, 1, filasMal.length, QR_MAL_NUM_COLS).setValues(filasMal);
+      mal.getRange(start, QR_MAL_COL_TOTAL, filasMal.length, 2).setNumberFormat(QR_FORMATO_MONTO);
+      mal.getRange(start, QR_MAL_NUM_COLS, filasMal.length, 1).setNumberFormat(QR_FORMATO_FECHA);
+    }
+
+    console.log('revisarQRMercadopago: pedidos revisados=' + pedidos.size +
+                ' | agregados a "' + QR_REVIEW_SHEET_NAME + '"=' + filasRev.length +
+                ' | agregados a "' + QR_MAL_SHEET_NAME + '"=' + filasMal.length);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// Un solo mail con todos los pedidos mal cobrados nuevos
+function enviarMailMalCobradoQR_(filas) {
+  const n = filas.length;
+  let cuerpo = (n === 1 ? '1 pedido mal cobrado' : n + ' pedidos mal cobrados') +
+               ' en "' + QR_SHEET_NAME + '":\n';
+
+  for (let k = 0; k < n; k++) {
+    const f = filas[k];   // [pedido, sucursal, total, descuento, motivo, filas, fecha]
+    cuerpo += '\n----------------------------------------\n';
+    cuerpo += 'Pedido: ' + f[0] + '\n';
+    cuerpo += 'Sucursal: ' + f[1] + '\n';
+    cuerpo += 'Total pedido: $' + formatearMontoQR_(f[2]) + '\n';
+    cuerpo += 'Descuento total: $' + formatearMontoQR_(f[3]) + '\n';
+    cuerpo += 'Motivo: ' + f[4] + '\n';
+    cuerpo += 'Filas en ' + QR_SHEET_NAME + ': ' + f[5] + '\n';
+  }
+
+  MailApp.sendEmail({
+    to: QR_EMAIL_TO,
+    subject: n === 1 ? QR_ASUNTO : QR_ASUNTO + ' (' + n + ')',
+    body: cuerpo
+  });
+}
+
+// Hojas creadas antes de agregar la columna Sucursal: la inserta al lado del pedido y completa las filas existentes
+function asegurarColumnaSucursalQR_(hoja, colPedido, pedidos) {
+  const colSuc = colPedido + 1;
+  if (String(hoja.getRange(1, colSuc).getValue()).trim() === QR_HEADER_SUCURSAL) return;
+  hoja.insertColumnAfter(colPedido);
+  hoja.getRange(1, colSuc).setValue(QR_HEADER_SUCURSAL).setFontWeight('bold');
+  const last = hoja.getLastRow();
+  if (last < QR_FIRST_DATA_ROW) return;
+  const valores = hoja.getRange(QR_FIRST_DATA_ROW, colPedido, last - QR_FIRST_DATA_ROW + 1, 1).getValues()
+    .map(function (r) {
+      const p = pedidos.get(String(r[0]).trim());
+      return [p ? p.sucursales.join(', ') : ''];
+    });
+  hoja.getRange(QR_FIRST_DATA_ROW, colSuc, valores.length, 1).setValues(valores);
+}
+
+function obtenerHojaQR_(ss, nombre, headers) {
+  let hoja = ss.getSheetByName(nombre);
+  if (!hoja) hoja = ss.insertSheet(nombre);
+
+  if (String(hoja.getRange(1, 1).getValue()).trim() === '') {
+    hoja.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+    hoja.setFrozenRows(1);
+  }
+  return hoja;
+}
+
+function leerPedidosRegistradosQR_(hoja, colPedido) {
+  const set = new Set();
+  const last = hoja.getLastRow();
+  if (last < QR_FIRST_DATA_ROW) return set;
+  hoja.getRange(QR_FIRST_DATA_ROW, colPedido, last - QR_FIRST_DATA_ROW + 1, 1)
+    .getValues()
+    .forEach(function (r) {
+      const v = String(r[0]).trim();
+      if (v) set.add(v);
+    });
+  return set;
+}
+
+function numeroQR_(v) {
+  if (typeof v === 'number') return v;
+  let s = String(v === null || v === undefined ? '' : v).replace(/[\s$]/g, '');
+  if (s === '') return 0;
+  if (s.indexOf(',') !== -1) s = s.replace(/\./g, '').replace(',', '.');
+  const n = Number(s);
+  return isNaN(n) ? 0 : n;
+}
+
+function redondearQR_(n) {
+  return Math.round(n * 100) / 100;
+}
+
+function formatearMontoQR_(n) {
+  return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+}
