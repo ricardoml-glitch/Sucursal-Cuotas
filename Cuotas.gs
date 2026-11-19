@@ -39,6 +39,8 @@ const CUOTAS_CFG = {
   // Historial de ventas: cada fila de VS se guarda una sola vez (VS solo trae los ultimos dias) con lo que decia
   // en ese momento, mas el resultado de la revision. Nunca se borra ni se reescribe.
   HOJA_HISTORIAL: 'Historial',
+  // El historial solo guarda ventas hasta ayer: las del dia todavia no tienen el pago cargado (se actualizan en informes distintos)
+  HISTORIAL_SOLO_HASTA_AYER: true,
   // Una venta con datos de VS todavia sin resolver (Cobranza con #N/A, X o vacia; Vendedor con error) no se guarda hasta
   // que se resuelvan o pasen estos dias (VS conserva 7): asi el historial no queda con datos incompletos.
   HISTORIAL_ESPERA_DIAS: 3,
@@ -239,6 +241,8 @@ function cuotasRegistrarHistorial_(ss, filas) {
   }
 
   const ahora = new Date();
+  const inicioHoy = new Date(ahora.getTime());
+  inicioHoy.setHours(0, 0, 0, 0);
   const repetidas = {};
   const nuevas = [];
   filas.forEach(function (f) {
@@ -246,6 +250,7 @@ function cuotasRegistrarHistorial_(ss, filas) {
     const clave = f.clave + (repetidas[f.clave] > 1 ? '#' + repetidas[f.clave] : '');
     if (existentes[clave]) return;
     const crudo = vs[f.filaVS - 1];
+    if (CUOTAS_CFG.HISTORIAL_SOLO_HASTA_AYER && cuotasFechaMs_(f.fecha) >= inicioHoy.getTime()) return;   // ventas de hoy: se guardan manana
     // Datos de VS que todavia no se resolvieron: se reintenta en la proxima corrida (hasta HISTORIAL_ESPERA_DIAS)
     const esperaMs = CUOTAS_CFG.HISTORIAL_ESPERA_DIAS * 24 * 3600 * 1000;
     if (!cuotasFechaMs_(f.fecha) || ahora.getTime() - cuotasFechaMs_(f.fecha) < esperaMs) {
