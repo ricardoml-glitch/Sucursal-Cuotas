@@ -257,9 +257,10 @@ function cuotasRegistrarHistorial_(ss, filas) {
 }
 
 // =========================== CONTEO MENSUAL ===========================
-// Hoja "Cuotas": por mes, cuantas operaciones (pedidos) hubo en cada plan de pago (efectivo, 01 Cuota, 12 Cuotas, ...).
-// Se calcula desde "Historial" (columnas Fecha, Pedido: ID y Cobranza), asi acumula todo el historico.
-// Un pedido se cuenta una vez por plan y mes (si tiene varios productos con el mismo plan, es una operacion).
+// Hoja "Cuotas": por mes y por sucursal, cuantas operaciones (pedidos) hubo en cada plan de pago (efectivo, 01 Cuota, ...).
+// Cada mes trae primero una fila TOTAL (todas las sucursales) y despues una fila por sucursal.
+// Se calcula desde "Historial" (columnas Fecha, Sucursal, Pedido: ID y Cobranza), asi acumula todo el historico.
+// Un pedido se cuenta una vez por plan, mes y sucursal (si tiene varios productos con el mismo plan, es una operacion).
 function cuotasActualizarConteo_(ss) {
   const hist = ss.getSheetByName(CUOTAS_CFG.HOJA_HISTORIAL);
   if (!hist || hist.getLastRow() < 2) return;
@@ -268,10 +269,11 @@ function cuotasActualizarConteo_(ss) {
   const iFecha = enc.indexOf(CUOTAS_CFG.VS.fecha);
   const iPedido = enc.indexOf(CUOTAS_CFG.VS.pedido);
   const iPlan = enc.indexOf(CUOTAS_CFG.VS.cobranza);
-  if (iFecha < 0 || iPedido < 0 || iPlan < 0) throw new Error('Historial: faltan columnas Fecha, Pedido: ID o Cobranza');
+  const iSucursal = enc.indexOf(CUOTAS_CFG.VS.sucursal);
+  if (iFecha < 0 || iPedido < 0 || iPlan < 0 || iSucursal < 0) throw new Error('Historial: faltan columnas Fecha, Sucursal, Pedido: ID o Cobranza');
 
   const etiquetas = {};   // clave del plan -> texto a mostrar
-  const meses = {};       // mes (yyyy-MM) -> { plan -> {pedido: true} }
+  const meses = {};       // mes (yyyymm) -> { sucursal -> { plan -> {pedido: true} } }
   for (let r = 1; r < datos.length; r++) {
     const d = datos[r];
     const pedido = String(d[iPedido]).trim();
@@ -284,9 +286,11 @@ function cuotasActualizarConteo_(ss) {
     if (clave0 === '' || clave0 === 'x' || texto.charAt(0) === '#') texto = CUOTAS_CFG.CONTEO_SIN_PLAN;
     const clave = cuotasClave_(texto);
     if (!(clave in etiquetas)) etiquetas[clave] = texto;
+    const suc = String(d[iSucursal]).trim() || '(sin sucursal)';
     if (!meses[mes]) meses[mes] = {};
-    if (!meses[mes][clave]) meses[mes][clave] = {};
-    meses[mes][clave][pedido] = true;
+    if (!meses[mes][suc]) meses[mes][suc] = {};
+    if (!meses[mes][suc][clave]) meses[mes][suc][clave] = {};
+    meses[mes][suc][clave][pedido] = true;
   }
 
   // Orden de columnas: efectivo, luego cuotas de menor a mayor, otros, y "Sin plan" al final
@@ -303,14 +307,26 @@ function cuotasActualizarConteo_(ss) {
   });
   const clavesMes = Object.keys(meses).map(Number).sort(function (a, b) { return b - a; });   // mas reciente primero
 
-  const encabezado = ['Mes'].concat(planes.map(function (k) { return etiquetas[k]; }), ['Total operaciones']);
-  const filas = clavesMes.map(function (m) {
-    const anio = Math.floor(m / 100), mes = m % 100;
-    const cantidades = planes.map(function (k) { return meses[m][k] ? Object.keys(meses[m][k]).length : 0; });
-    // Total = pedidos distintos del mes (un pedido con dos planes distintos cuenta una vez)
-    const todos = {};
-    planes.forEach(function (k) { if (meses[m][k]) Object.keys(meses[m][k]).forEach(function (p) { todos[p] = true; }); });
-    return [new Date(anio, mes - 1, 1)].concat(cantidades, [Object.keys(todos).length]);
+  const encabezado = ['Mes', 'Sucursal'].concat(planes.map(function (k) { return etiquetas[k]; }), ['Total operaciones']);
+  // Cuenta los pedidos distintos de un conjunto de sucursales (un pedido con dos planes cuenta una vez en el total)
+  const contar = function (mesObj, sucursales) {
+    const porPlan = {}, todos = {};
+    sucursales.forEach(function (suc) {
+      planes.forEach(function (k) {
+        const peds = mesObj[suc][k];
+        if (!peds) return;
+        if (!porPlan[k]) porPlan[k] = {};
+        Object.keys(peds).forEach(function (p) { porPlan[k][p] = true; todos[p] = true; });
+      });
+    });
+    return planes.map(function (k) { return porPlan[k] ? Object.keys(porPlan[k]).length : 0; }).concat([Object.keys(todos).length]);
+  };
+  const filas = [];
+  clavesMes.forEach(function (m) {
+    const fecha = new Date(Math.floor(m / 100), m % 100 - 1, 1);
+    const sucursales = Object.keys(meses[m]).sort();
+    filas.push([fecha, 'TOTAL'].concat(contar(meses[m], sucursales)));
+    sucursales.forEach(function (suc) { filas.push([fecha, suc].concat(contar(meses[m], [suc]))); });
   });
 
   let sh = ss.getSheetByName(CUOTAS_CFG.HOJA_CONTEO);
