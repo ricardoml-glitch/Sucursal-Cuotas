@@ -66,9 +66,8 @@ const CUOTAS_CFG = {
   // Hoja de vendedores: por mes y vendedor, productos vendidos (lineas de VS) y su detalle por plan de pago.
   // Toma la columna "Vendedor" de VS (via Historial).
   HOJA_VENDEDORES: 'Vendedores',               // vendedores de los locales (con la sucursal)
-  HOJA_VENDEDORES_ONLINE: 'Vendedores Online', // vendedores online, en un informe aparte
   VENDEDORES_ONLINE: ['A Asignar', 'Rocio', 'Marcos P', 'Ricardo Leon', 'Micaela'],
-  // Sucursales de VS que en realidad son ventas online: van a "Vendedores Online" y en Analisis se agrupan como ONLINE
+  // Sucursales de VS que en realidad son ventas online: no entran en Vendedores y en Analisis se agrupan como ONLINE
   SUCURSALES_ONLINE: ['FACT ELECTRONICA', 'FULFILLMENT'],
   SUCURSAL_ONLINE_ETIQUETA: 'ONLINE',
   VENDEDOR_ENCABEZADO: 'Vendedor',
@@ -508,7 +507,7 @@ function cuotasActualizarConteo_(ss) {
 }
 
 // =========================== VENDEDORES ===========================
-// Dos hojas desde "Historial": "Vendedores" (locales, con la sucursal) y "Vendedores Online" (los de VENDEDORES_ONLINE).
+// Hoja "Vendedores" desde "Historial": solo los vendedores de los locales (se excluyen VENDEDORES_ONLINE y SUCURSALES_ONLINE).
 // Por mes: productos vendidos (cada linea de VS es un producto) y su detalle por plan de pago (efectivo, 01 Cuota, ...).
 function cuotasActualizarVendedores_(ss) {
   const hist = ss.getSheetByName(CUOTAS_CFG.HOJA_HISTORIAL);
@@ -521,7 +520,6 @@ function cuotasActualizarVendedores_(ss) {
   CUOTAS_CFG.VENDEDORES_ONLINE.forEach(function (v) { online[cuotasClave_(v)] = true; });
   const esOnline = function (v, suc) { return !!online[cuotasClave_(v)] || cuotasEsSucursalOnline_(suc); };
   cuotasArmarVendedores_(ss, datos, enc, CUOTAS_CFG.HOJA_VENDEDORES, 'locales', function (v, suc) { return !esOnline(v, suc); });
-  cuotasArmarVendedores_(ss, datos, enc, CUOTAS_CFG.HOJA_VENDEDORES_ONLINE, 'online', esOnline);
 }
 
 function cuotasEsSucursalOnline_(suc) {
