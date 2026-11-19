@@ -307,8 +307,8 @@ function cuotasEtiquetaMes_(m) {
   return ('0' + (m % 100)).slice(-2) + '/' + Math.floor(m / 100);
 }
 
-// Arma una hoja de analisis: titulo y tabla de detalle (sin graficos).
-function cuotasEscribirAnalisis_(ss, nombre, nombreAnterior, tituloDetalle, encabezado, filas) {
+// Arma una hoja de analisis con una o varias tablas una debajo de otra: tablas = [{ titulo, encabezado, filas }] (sin graficos).
+function cuotasEscribirAnalisis_(ss, nombre, nombreAnterior, tablas) {
   let sh = ss.getSheetByName(nombre);
   if (!sh) {
     const anterior = nombreAnterior ? ss.getSheetByName(nombreAnterior) : null;
@@ -318,16 +318,84 @@ function cuotasEscribirAnalisis_(ss, nombre, nombreAnterior, tituloDetalle, enca
   sh.getCharts().forEach(function (c) { sh.removeChart(c); });   // saca los graficos de versiones anteriores
   sh.clear();
 
-  const filaTabla = 2;   // encabezado de la tabla (el titulo va en la fila 1)
-  if (sh.getMaxRows() < filaTabla + filas.length + 1) sh.insertRowsAfter(sh.getMaxRows(), filaTabla + filas.length + 1 - sh.getMaxRows());
-  if (sh.getMaxColumns() < encabezado.length) sh.insertColumnsAfter(sh.getMaxColumns(), encabezado.length - sh.getMaxColumns());
-  sh.getRange(1, 1).setValue(tituloDetalle).setFontWeight('bold');
-  sh.getRange(filaTabla, 1, 1, encabezado.length).setValues([encabezado]).setFontWeight('bold');
-  if (filas.length) {
-    sh.getRange(filaTabla + 1, 1, filas.length, encabezado.length).setValues(filas);
-    sh.getRange(filaTabla + 1, 1, filas.length, 1).setNumberFormat('MM/yyyy');
+  let filasTotal = 1, ancho = 1;
+  tablas.forEach(function (t) { filasTotal += t.filas.length + 4; ancho = Math.max(ancho, t.encabezado.length); });
+  if (sh.getMaxRows() < filasTotal) sh.insertRowsAfter(sh.getMaxRows(), filasTotal - sh.getMaxRows());
+  if (sh.getMaxColumns() < ancho) sh.insertColumnsAfter(sh.getMaxColumns(), ancho - sh.getMaxColumns());
+  let fila = 1;
+  tablas.forEach(function (t) {
+    sh.getRange(fila, 1).setValue(t.titulo).setFontWeight('bold');
+    sh.getRange(fila + 1, 1, 1, t.encabezado.length).setValues([t.encabezado]).setFontWeight('bold');
+    if (t.filas.length) {
+      sh.getRange(fila + 2, 1, t.filas.length, t.encabezado.length).setValues(t.filas);
+      sh.getRange(fila + 2, 1, t.filas.length, 1).setNumberFormat('MM/yyyy');
+    }
+    fila += t.filas.length + 4;   // titulo + encabezado + filas + 2 de separacion
+  });
+}
+
+// Tabla por mes y por una clave (vendedor o sucursal) con el detalle por plan de pago, desde las filas de Historial.
+// claveDe(vendedor, sucursal) devuelve la clave de la fila o null para no contarla. contarPedidos: true = pedidos distintos
+// (operaciones), false = lineas de VS (productos). Cada mes trae primero una fila TOTAL.
+function cuotasTablaPorClave_(datos, enc, titulo, etiquetaClave, etiquetaTotal, claveDe, contarPedidos) {
+  const iVend = enc.indexOf(CUOTAS_CFG.VENDEDOR_ENCABEZADO), iSuc = enc.indexOf(CUOTAS_CFG.VS.sucursal);
+  const iFecha = enc.indexOf(CUOTAS_CFG.VS.fecha), iPlan = enc.indexOf(CUOTAS_CFG.VS.cobranza);
+  const iCond = enc.indexOf(CUOTAS_CFG.VS.condicion), iPed = enc.indexOf(CUOTAS_CFG.VS.pedido);
+  const etiquetas = {}, meses = {};   // mes -> clave -> plan -> { id: true }
+  for (let r = 1; r < datos.length; r++) {
+    const d = datos[r];
+    const vend = String(d[iVend]).trim() || CUOTAS_CFG.VENDEDOR_SIN;
+    const suc = iSuc >= 0 ? String(d[iSuc]).trim() : '';
+    const k = claveDe(vend, suc);
+    const ms = cuotasFechaMs_(d[iFecha]);
+    if (k === null || !ms) continue;
+    const f = new Date(ms);
+    const mes = f.getFullYear() * 100 + (f.getMonth() + 1);
+    const texto = cuotasTextoPlan_(d[iPlan], iCond >= 0 ? d[iCond] : '');
+    const plan = cuotasClave_(texto);
+    if (!(plan in etiquetas)) etiquetas[plan] = texto;
+    if (!meses[mes]) meses[mes] = {};
+    if (!meses[mes][k]) meses[mes][k] = {};
+    if (!meses[mes][k][plan]) meses[mes][k][plan] = {};
+    meses[mes][k][plan][contarPedidos && iPed >= 0 ? String(d[iPed]).trim() : 'l' + r] = true;
   }
-  sh.setFrozenRows(filaTabla);
+  const planes = cuotasOrdenarPlanes_(etiquetas);
+  const unir = function (m, claves) {   // ids distintos por plan para un conjunto de claves
+    const porPlan = {};
+    claves.forEach(function (k) {
+      Object.keys(meses[m][k]).forEach(function (p) {
+        if (!porPlan[p]) porPlan[p] = {};
+        Object.keys(meses[m][k][p]).forEach(function (id) { porPlan[p][id] = true; });
+      });
+    });
+    return porPlan;
+  };
+  const total = function (porPlan) {
+    const todos = {};
+    Object.keys(porPlan).forEach(function (p) { Object.keys(porPlan[p]).forEach(function (id) { todos[id] = true; }); });
+    return Object.keys(todos).length;
+  };
+  const fila = function (fecha, nombre, porPlan) {
+    return [fecha, nombre, total(porPlan)].concat(planes.map(function (p) { return porPlan[p] ? Object.keys(porPlan[p]).length : 0; }));
+  };
+  const filas = [];
+  Object.keys(meses).map(Number).sort(function (a, b) { return b - a; }).forEach(function (m) {
+    const fecha = new Date(Math.floor(m / 100), m % 100 - 1, 1);
+    const claves = Object.keys(meses[m]);
+    filas.push(fila(fecha, 'TOTAL', unir(m, claves)));
+    const ordenadas = claves.map(function (k) { return { k: k, t: total(unir(m, [k])) }; }).sort(function (a, b) {
+      return (a.k === CUOTAS_CFG.VENDEDOR_SIN) - (b.k === CUOTAS_CFG.VENDEDOR_SIN) || b.t - a.t || (a.k < b.k ? -1 : a.k > b.k ? 1 : 0);
+    });
+    ordenadas.forEach(function (o) { filas.push(fila(fecha, o.k, unir(m, [o.k]))); });
+  });
+  return { titulo: titulo, encabezado: ['Mes', etiquetaClave, etiquetaTotal].concat(planes.map(function (p) { return etiquetas[p]; })), filas: filas };
+}
+
+// Vendedor de local (no es de los vendedores online ni de una sucursal online)
+function cuotasEsLocal_(vend, suc) {
+  const v = cuotasClave_(vend);
+  const online = CUOTAS_CFG.VENDEDORES_ONLINE.some(function (x) { return cuotasClave_(x) === v; });
+  return !online && !cuotasEsSucursalOnline_(suc);
 }
 
 // Texto del plan de pago para contar: la cobranza tal cual, o "Sin plan" si esta vacia, es X o trae un error
@@ -375,6 +443,7 @@ function cuotasActualizarConteo_(ss) {
   const iPlan = enc.indexOf(CUOTAS_CFG.VS.cobranza);
   const iSucursal = enc.indexOf(CUOTAS_CFG.VS.sucursal);
   const iCond = enc.indexOf(CUOTAS_CFG.VS.condicion);
+  const iVend = enc.indexOf(CUOTAS_CFG.VENDEDOR_ENCABEZADO);
   if (iFecha < 0 || iPedido < 0 || iPlan < 0 || iSucursal < 0) throw new Error('Historial: faltan columnas Fecha, Sucursal, Pedido: ID o Cobranza');
 
   const etiquetas = {};   // clave del plan -> texto a mostrar
@@ -422,12 +491,17 @@ function cuotasActualizarConteo_(ss) {
     sucursales.forEach(function (suc) { filas.push([fecha, suc].concat(contar(meses[m], [suc]))); });
   });
 
-  cuotasEscribirAnalisis_(ss, CUOTAS_CFG.HOJA_CONTEO, CUOTAS_CFG.HOJA_CONTEO_ANTERIOR, 'Detalle por mes y sucursal (operaciones = pedidos)', encabezado, filas);
+  const tablas = [{ titulo: 'Detalle por mes y sucursal (operaciones = pedidos)', encabezado: encabezado, filas: filas }];
+  if (iVend >= 0) {
+    tablas.push(cuotasTablaPorClave_(datos, enc, 'Detalle por mes y vendedor (operaciones = pedidos; solo vendedores de locales)', 'Vendedor', 'Total operaciones',
+      function (v, suc) { return cuotasEsLocal_(v, suc) ? v : null; }, true));
+  }
+  cuotasEscribirAnalisis_(ss, CUOTAS_CFG.HOJA_CONTEO, CUOTAS_CFG.HOJA_CONTEO_ANTERIOR, tablas);
 }
 
 // =========================== VENDEDORES ===========================
-// Hoja "Vendedores" desde "Historial": solo los vendedores de los locales (se excluyen VENDEDORES_ONLINE y SUCURSALES_ONLINE).
-// Por mes: productos vendidos (cada linea de VS es un producto) y su detalle por plan de pago (efectivo, 01 Cuota, ...).
+// Hoja "Vendedores" desde "Historial", solo vendedores de los locales (se excluyen VENDEDORES_ONLINE y SUCURSALES_ONLINE).
+// Dos tablas: por mes y vendedor, y por mes y sucursal. Cuentan productos (cada linea de VS es un producto) por plan de pago.
 function cuotasActualizarVendedores_(ss) {
   const hist = ss.getSheetByName(CUOTAS_CFG.HOJA_HISTORIAL);
   if (!hist || hist.getLastRow() < 2) return;
@@ -435,73 +509,18 @@ function cuotasActualizarVendedores_(ss) {
   const enc = datos[0].map(function (h) { return String(h).trim(); });
   if (enc.indexOf(CUOTAS_CFG.VENDEDOR_ENCABEZADO) < 0) return;   // VS todavia no tiene la columna Vendedor
   if (enc.indexOf(CUOTAS_CFG.VS.fecha) < 0 || enc.indexOf(CUOTAS_CFG.VS.cobranza) < 0) throw new Error('Historial: faltan columnas Fecha o Cobranza');
-  const online = {};
-  CUOTAS_CFG.VENDEDORES_ONLINE.forEach(function (v) { online[cuotasClave_(v)] = true; });
-  const esOnline = function (v, suc) { return !!online[cuotasClave_(v)] || cuotasEsSucursalOnline_(suc); };
-  cuotasArmarVendedores_(ss, datos, enc, CUOTAS_CFG.HOJA_VENDEDORES, 'locales', function (v, suc) { return !esOnline(v, suc); });
+  const tablas = [
+    cuotasTablaPorClave_(datos, enc, 'Detalle por mes y vendedor (productos = lineas de VS)', 'Vendedor', 'Productos vendidos',
+      function (v, suc) { return cuotasEsLocal_(v, suc) ? v : null; }, false),
+    cuotasTablaPorClave_(datos, enc, 'Detalle por mes y sucursal (productos = lineas de VS)', 'Sucursal', 'Productos vendidos',
+      function (v, suc) { return cuotasEsLocal_(v, suc) ? (suc || '(sin sucursal)') : null; }, false)
+  ];
+  cuotasEscribirAnalisis_(ss, CUOTAS_CFG.HOJA_VENDEDORES, null, tablas);
 }
 
 function cuotasEsSucursalOnline_(suc) {
   const c = cuotasClave_(suc);
   return CUOTAS_CFG.SUCURSALES_ONLINE.some(function (x) { return cuotasClave_(x) === c; });
-}
-
-// Arma una hoja de vendedores con los vendedores que cumplen "incluir" (etiqueta: 'locales' u 'online', va en los titulos).
-function cuotasArmarVendedores_(ss, datos, enc, nombreHoja, etiqueta, incluir) {
-  const iVend = enc.indexOf(CUOTAS_CFG.VENDEDOR_ENCABEZADO);
-  const iFecha = enc.indexOf(CUOTAS_CFG.VS.fecha);
-  const iPlan = enc.indexOf(CUOTAS_CFG.VS.cobranza);
-  const iCond = enc.indexOf(CUOTAS_CFG.VS.condicion);
-  const iSuc = enc.indexOf(CUOTAS_CFG.VS.sucursal);
-  const sin = CUOTAS_CFG.VENDEDOR_SIN;
-
-  const etiquetas = {};
-  const meses = {};   // mes -> { vendedor -> { plan -> cantidad de productos } }
-  for (let r = 1; r < datos.length; r++) {
-    const d = datos[r];
-    const vend = String(d[iVend]).trim() || sin;
-    if (!incluir(vend, iSuc >= 0 ? String(d[iSuc]).trim() : '')) continue;
-    const ms = cuotasFechaMs_(d[iFecha]);
-    if (!ms) continue;
-    const f = new Date(ms);
-    const mes = f.getFullYear() * 100 + (f.getMonth() + 1);
-    const texto = cuotasTextoPlan_(d[iPlan], iCond >= 0 ? d[iCond] : '');
-    const clave = cuotasClave_(texto);
-    if (!(clave in etiquetas)) etiquetas[clave] = texto;
-    if (!meses[mes]) meses[mes] = {};
-    if (!meses[mes][vend]) meses[mes][vend] = {};
-    meses[mes][vend][clave] = (meses[mes][vend][clave] || 0) + 1;
-  }
-
-  const planes = cuotasOrdenarPlanes_(etiquetas);
-  const etiquetasPlanes = planes.map(function (k) { return etiquetas[k]; });
-  const sumar = function (acum, porPlan) { Object.keys(porPlan).forEach(function (k) { acum[k] = (acum[k] || 0) + porPlan[k]; }); };
-  const suma = function (porPlan) { return Object.keys(porPlan).reduce(function (a, k) { return a + porPlan[k]; }, 0); };
-  const cantidades = function (porPlan) { return planes.map(function (k) { return porPlan[k] || 0; }); };
-  // Planes acumulados de un mes: de un vendedor o de todos (vend = null)
-  const acumulado = function (m, vend) {
-    const acum = {};
-    Object.keys(meses[m]).forEach(function (v) { if (vend === null || v === vend) sumar(acum, meses[m][v]); });
-    return acum;
-  };
-  const ordenVend = function (m, a, b) {
-    return (a === sin) - (b === sin) || suma(acumulado(m, b)) - suma(acumulado(m, a)) || (a < b ? -1 : a > b ? 1 : 0);
-  };
-
-  const encabezado = ['Mes', 'Vendedor', 'Productos vendidos'].concat(etiquetasPlanes);
-  const fila = function (fecha, vend, porPlan) { return [fecha, vend, suma(porPlan)].concat(cantidades(porPlan)); };
-  const clavesMes = Object.keys(meses).map(Number).sort(function (a, b) { return b - a; });   // mas reciente primero
-  const filas = [];
-  clavesMes.forEach(function (m) {
-    const fecha = new Date(Math.floor(m / 100), m % 100 - 1, 1);
-    filas.push(fila(fecha, 'TOTAL', acumulado(m, null)));
-    Object.keys(meses[m]).sort(function (a, b) { return ordenVend(m, a, b); }).forEach(function (v) {
-      filas.push(fila(fecha, v, meses[m][v]));
-    });
-  });
-
-  const titulo = 'Detalle por mes y vendedor ' + etiqueta + ' (productos = lineas de VS)';
-  cuotasEscribirAnalisis_(ss, nombreHoja, null, titulo, encabezado, filas);
 }
 
 // =========================== QR MERCADOPAGO ===========================
