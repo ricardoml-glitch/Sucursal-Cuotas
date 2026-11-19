@@ -44,7 +44,11 @@ const CUOTAS_CFG = {
   ENCABEZADO_HISTORIAL_EXTRA: ['Precio esperado', 'Regla aplicada', 'Estado', 'Observaciones', 'Registrado', 'Clave'],
 
   // Hoja de conteo mensual: cantidad de operaciones (pedidos) por plan de pago, calculada desde Historial
-  HOJA_CONTEO: 'Cuotas',
+  HOJA_CONTEO: 'Análisis',
+  HOJA_CONTEO_ANTERIOR: 'Cuotas',   // si existe con este nombre, se renombra
+  GRAFICOS_MESES: 12,              // meses que muestran los graficos (los ultimos)
+  GRAFICOS_VENDEDORES: 8,          // vendedores que se muestran en el grafico de evolucion por vendedor
+  GRAFICO_ALTO: 300, GRAFICO_ANCHO: 640,
   CONTEO_SIN_PLAN: 'Sin plan',   // cobranza vacia, X o con error
 
   // Hoja de vendedores: por mes y vendedor, productos vendidos (lineas de VS) y su detalle por plan de pago.
@@ -268,6 +272,75 @@ function cuotasRegistrarHistorial_(ss, filas) {
 // Cada mes trae primero una fila TOTAL (todas las sucursales) y despues una fila por sucursal.
 // Se calcula desde "Historial" (columnas Fecha, Sucursal, Pedido: ID y Cobranza), asi acumula todo el historico.
 // Un pedido se cuenta una vez por plan, mes y sucursal (si tiene varios productos con el mismo plan, es una operacion).
+function cuotasEtiquetaMes_(m) {
+  return ('0' + (m % 100)).slice(-2) + '/' + Math.floor(m / 100);
+}
+
+// Arma una hoja de analisis: graficos arriba (dos por fila), despues la tabla de detalle y por ultimo los datos
+// que alimentan cada grafico. graficos: [{ titulo, cabecera, filas }] (primera columna = categorias, el resto = series).
+function cuotasEscribirAnalisis_(ss, nombre, nombreAnterior, tituloDetalle, encabezado, filas, graficos) {
+  let sh = ss.getSheetByName(nombre);
+  if (!sh) {
+    const anterior = nombreAnterior ? ss.getSheetByName(nombreAnterior) : null;
+    if (anterior) { anterior.setName(nombre); sh = anterior; }
+    else sh = ss.insertSheet(nombre);
+  }
+  sh.getCharts().forEach(function (c) { sh.removeChart(c); });
+  sh.clear();
+
+  const FILAS_POR_GRAFICO = Math.ceil(CUOTAS_CFG.GRAFICO_ALTO / 21) + 1;
+  const filasGraficos = Math.ceil(graficos.length / 2) * FILAS_POR_GRAFICO;
+  const filaDetalle = filasGraficos + 2;                       // titulo del detalle
+  const filaTabla = filaDetalle + 1;                           // encabezado de la tabla
+  const filaDatos = filaTabla + filas.length + 3;              // titulo de los datos de graficos
+  let anchoMax = encabezado.length;
+  let filasDatos = 0;
+  graficos.forEach(function (g) {
+    anchoMax = Math.max(anchoMax, g.cabecera.length);
+    filasDatos += g.filas.length + 3;
+  });
+  const filasNecesarias = filaDatos + filasDatos + 2;
+  if (sh.getMaxRows() < filasNecesarias) sh.insertRowsAfter(sh.getMaxRows(), filasNecesarias - sh.getMaxRows());
+  if (sh.getMaxColumns() < Math.max(anchoMax, 15)) sh.insertColumnsAfter(sh.getMaxColumns(), Math.max(anchoMax, 15) - sh.getMaxColumns());
+  sh.setColumnWidths(1, 15, 100);
+
+  // Detalle
+  sh.getRange(filaDetalle, 1).setValue(tituloDetalle).setFontWeight('bold');
+  sh.getRange(filaTabla, 1, 1, encabezado.length).setValues([encabezado]).setFontWeight('bold');
+  if (filas.length) {
+    sh.getRange(filaTabla + 1, 1, filas.length, encabezado.length).setValues(filas);
+    sh.getRange(filaTabla + 1, 1, filas.length, 1).setNumberFormat('MM/yyyy');
+  }
+
+  // Datos de los graficos + graficos
+  if (graficos.length) sh.getRange(filaDatos, 1).setValue('Datos de los graficos (los usa el script, no editar)').setFontWeight('bold');
+  let fila = filaDatos + 1;
+  graficos.forEach(function (g, i) {
+    sh.getRange(fila, 1).setValue(g.titulo).setFontWeight('bold');
+    sh.getRange(fila + 1, 1, 1, g.cabecera.length).setValues([g.cabecera]);
+    let rango;
+    if (g.filas.length) {
+      sh.getRange(fila + 2, 1, g.filas.length, g.cabecera.length).setValues(g.filas);
+      rango = sh.getRange(fila + 1, 1, g.filas.length + 1, g.cabecera.length);
+    } else {
+      rango = sh.getRange(fila + 1, 1, 1, g.cabecera.length);
+    }
+    const grafico = sh.newChart()
+      .setChartType(Charts.ChartType.COLUMN)
+      .addRange(rango)
+      .setNumHeaders(1)
+      .setOption('title', g.titulo)
+      .setOption('isStacked', true)
+      .setOption('legend', { position: 'right' })
+      .setOption('width', CUOTAS_CFG.GRAFICO_ANCHO)
+      .setOption('height', CUOTAS_CFG.GRAFICO_ALTO)
+      .setPosition(1 + Math.floor(i / 2) * FILAS_POR_GRAFICO, i % 2 === 0 ? 1 : 8, 0, 0)
+      .build();
+    sh.insertChart(grafico);
+    fila += g.filas.length + 3;
+  });
+}
+
 // Texto del plan de pago para contar: la cobranza tal cual, o "Sin plan" si esta vacia, es X o trae un error
 function cuotasTextoPlan_(valor) {
   const texto = String(valor).trim();
@@ -345,15 +418,34 @@ function cuotasActualizarConteo_(ss) {
     sucursales.forEach(function (suc) { filas.push([fecha, suc].concat(contar(meses[m], [suc]))); });
   });
 
-  let sh = ss.getSheetByName(CUOTAS_CFG.HOJA_CONTEO);
-  if (!sh) sh = ss.insertSheet(CUOTAS_CFG.HOJA_CONTEO);
-  sh.getRange(1, 1, sh.getMaxRows(), Math.max(sh.getMaxColumns(), encabezado.length)).clearContent();
-  sh.getRange(1, 1, 1, encabezado.length).setValues([encabezado]);
-  sh.setFrozenRows(1);
-  if (filas.length) {
-    sh.getRange(2, 1, filas.length, encabezado.length).setValues(filas);
-    sh.getRange(2, 1, filas.length, 1).setNumberFormat('MM/yyyy');
+  // --- Graficos: ultimos meses, sin el total de cada fila ---
+  const etiquetasPlanes = planes.map(function (k) { return etiquetas[k]; });
+  const mesesAsc = clavesMes.slice().reverse().slice(-CUOTAS_CFG.GRAFICOS_MESES);
+  const ultimo = clavesMes[0];
+  const sinTotal = function (v) { return v.slice(0, planes.length); };
+  const todasSuc = {};
+  clavesMes.forEach(function (m) { Object.keys(meses[m]).forEach(function (x) { todasSuc[x] = true; }); });
+  const sucursalesOrden = Object.keys(todasSuc).sort();
+  const graficos = [];
+  if (ultimo !== undefined) {
+    graficos.push({
+      titulo: 'Operaciones por mes - todas las sucursales', cabecera: ['Mes'].concat(etiquetasPlanes),
+      filas: mesesAsc.map(function (m) { return [cuotasEtiquetaMes_(m)].concat(sinTotal(contar(meses[m], Object.keys(meses[m])))); })
+    });
+    graficos.push({
+      titulo: 'Operaciones por sucursal - ' + cuotasEtiquetaMes_(ultimo) + ' (mes en curso o ultimo)', cabecera: ['Sucursal'].concat(etiquetasPlanes),
+      filas: Object.keys(meses[ultimo]).sort().map(function (x) { return [x].concat(sinTotal(contar(meses[ultimo], [x]))); })
+    });
+    sucursalesOrden.forEach(function (x) {
+      graficos.push({
+        titulo: x + ' - operaciones por mes', cabecera: ['Mes'].concat(etiquetasPlanes),
+        filas: mesesAsc.map(function (m) {
+          return [cuotasEtiquetaMes_(m)].concat(meses[m][x] ? sinTotal(contar(meses[m], [x])) : planes.map(function () { return 0; }));
+        })
+      });
+    });
   }
+  cuotasEscribirAnalisis_(ss, CUOTAS_CFG.HOJA_CONTEO, CUOTAS_CFG.HOJA_CONTEO_ANTERIOR, 'Detalle por mes y sucursal (operaciones = pedidos)', encabezado, filas, graficos);
 }
 
 // =========================== VENDEDORES ===========================
@@ -410,15 +502,42 @@ function cuotasActualizarVendedores_(ss) {
     vendedores.forEach(function (v) { filas.push(fila(fecha, v, meses[m][v])); });
   });
 
-  let sh = ss.getSheetByName(CUOTAS_CFG.HOJA_VENDEDORES);
-  if (!sh) sh = ss.insertSheet(CUOTAS_CFG.HOJA_VENDEDORES);
-  sh.getRange(1, 1, sh.getMaxRows(), Math.max(sh.getMaxColumns(), encabezado.length)).clearContent();
-  sh.getRange(1, 1, 1, encabezado.length).setValues([encabezado]);
-  sh.setFrozenRows(1);
-  if (filas.length) {
-    sh.getRange(2, 1, filas.length, encabezado.length).setValues(filas);
-    sh.getRange(2, 1, filas.length, 1).setNumberFormat('MM/yyyy');
+  // --- Graficos ---
+  const etiquetasPlanes = planes.map(function (k) { return etiquetas[k]; });
+  const clavesMes = Object.keys(meses).map(Number).sort(function (a, b) { return b - a; });
+  const mesesAsc = clavesMes.slice().reverse().slice(-CUOTAS_CFG.GRAFICOS_MESES);
+  const ultimo = clavesMes[0];
+  const sin = CUOTAS_CFG.VENDEDOR_SIN;
+  const cant = function (m, v) { return planes.map(function (k) { return (meses[m][v] && meses[m][v][k]) || 0; }); };
+  const total = function (m, v) { return cant(m, v).reduce(function (a, b) { return a + b; }, 0); };
+  const graficos = [];
+  if (ultimo !== undefined) {
+    graficos.push({
+      titulo: 'Productos vendidos por mes - todos los vendedores', cabecera: ['Mes'].concat(etiquetasPlanes),
+      filas: mesesAsc.map(function (m) {
+        const acum = planes.map(function () { return 0; });
+        Object.keys(meses[m]).forEach(function (v) { cant(m, v).forEach(function (n, i) { acum[i] += n; }); });
+        return [cuotasEtiquetaMes_(m)].concat(acum);
+      })
+    });
+    const delUltimo = Object.keys(meses[ultimo]).sort(function (a, b) { return total(ultimo, b) - total(ultimo, a); });
+    graficos.push({
+      titulo: 'Productos por vendedor - ' + cuotasEtiquetaMes_(ultimo) + ' (mes en curso o ultimo), por plan de pago', cabecera: ['Vendedor'].concat(etiquetasPlanes),
+      filas: delUltimo.map(function (v) { return [v].concat(cant(ultimo, v)); })
+    });
+    // Evolucion por vendedor: los que mas vendieron en los meses mostrados
+    const acumVend = {};
+    mesesAsc.forEach(function (m) { Object.keys(meses[m]).forEach(function (v) { acumVend[v] = (acumVend[v] || 0) + total(m, v); }); });
+    const top = Object.keys(acumVend).filter(function (v) { return v !== sin; })
+      .sort(function (a, b) { return acumVend[b] - acumVend[a]; }).slice(0, CUOTAS_CFG.GRAFICOS_VENDEDORES);
+    if (top.length) {
+      graficos.push({
+        titulo: 'Productos vendidos por mes y vendedor (los ' + top.length + ' con mas ventas)', cabecera: ['Mes'].concat(top),
+        filas: mesesAsc.map(function (m) { return [cuotasEtiquetaMes_(m)].concat(top.map(function (v) { return total(m, v); })); })
+      });
+    }
   }
+  cuotasEscribirAnalisis_(ss, CUOTAS_CFG.HOJA_VENDEDORES, null, 'Detalle por mes y vendedor (productos = lineas de VS)', encabezado, filas, graficos);
 }
 
 // =========================== QR MERCADOPAGO ===========================
