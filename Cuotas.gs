@@ -36,6 +36,15 @@ const CUOTAS_CFG = {
   COLUMNA_DETECTADO: 'Detectado',    // columna que lleva formato de fecha y hora
   FORMATO_FECHA_HORA: 'dd/MM/yyyy HH:mm',
 
+  // Historial de ventas: cada fila de VS se guarda una sola vez (VS solo trae los ultimos dias) con lo que decia
+  // en ese momento, mas el resultado de la revision. Nunca se borra ni se reescribe.
+  HOJA_HISTORIAL: 'Historial',
+  ENCABEZADO_HISTORIAL: [
+    'Fecha', 'Sucursal', 'Pedido: ID', 'Condición Comercial', 'Producto', 'Plan de pago', 'Cuotas', 'Cobranza automática',
+    'Canal de venta', 'Precio Unitario', 'Costo producto', '% sobre costo', 'Precio lista', 'Precio mínimo (PVM)',
+    'Precio esperado', 'Regla aplicada', 'Estado', 'Observaciones', 'Registrado', 'Clave'
+  ],
+
   // Registro de cuando se detecto cada pedido a revisar (se conserva la primera vez)
   HOJA_DETECTADOS: 'Detectados',
   ENCABEZADO_DETECTADOS: ['Clave', 'Detectado', 'Avisado'],
@@ -157,6 +166,7 @@ function actualizarResumenCuotas() {
     const reglas = cuotasLeerReglas_(ss);
     const filas = cuotasLeerVS_(ss, reglas);
     const revisar = filas.filter(cuotasEsParaResumen_);
+    try { cuotasRegistrarHistorial_(ss, filas); } catch (e) { cuotasLog_('ERROR', 'Historial: ' + e.message); }
     const qr = cuotasLeerQR_(ss);      // pedidos de QR Mercadopago con descuento mal aplicado
     qr.forEach(function (f) { revisar.push(f); });
     const avisados = cuotasProcesarDetectados_(ss, revisar, cuotasSemillaQR_(ss));
@@ -169,6 +179,58 @@ function actualizarResumenCuotas() {
   } finally {
     lock.releaseLock();
   }
+}
+
+// =========================== HISTORIAL ===========================
+// Agrega al final de "Historial" las filas de VS que todavia no estaban (clave pedido||producto||condicion;
+// si una misma venta trae lineas identicas se distinguen por orden). Devuelve cuantas agrego.
+function cuotasRegistrarHistorial_(ss, filas) {
+  const nCols = CUOTAS_CFG.ENCABEZADO_HISTORIAL.length;
+  const colClave = nCols;
+  let sh = ss.getSheetByName(CUOTAS_CFG.HOJA_HISTORIAL);
+  if (!sh) sh = ss.insertSheet(CUOTAS_CFG.HOJA_HISTORIAL);
+  if (sh.getLastRow() === 0) {
+    sh.getRange(1, 1, 1, nCols).setValues([CUOTAS_CFG.ENCABEZADO_HISTORIAL]);
+    sh.setFrozenRows(1);
+  }
+  const existentes = {};
+  const ultima = sh.getLastRow();
+  if (ultima > 1) {
+    sh.getRange(2, colClave, ultima - 1, 1).getValues().forEach(function (r) { existentes[String(r[0])] = true; });
+  }
+
+  const ahora = new Date();
+  const repetidas = {};
+  const nuevas = [];
+  filas.forEach(function (f) {
+    repetidas[f.clave] = (repetidas[f.clave] || 0) + 1;
+    const clave = f.clave + (repetidas[f.clave] > 1 ? '#' + repetidas[f.clave] : '');
+    if (existentes[clave]) return;
+    existentes[clave] = true;
+    const pu = cuotasANumero_(f.precioUnitario);
+    const costo = cuotasANumero_(f.costo);
+    nuevas.push({
+      ms: cuotasFechaMs_(f.fecha),
+      fila: [
+        f.fecha, f.sucursal, f.pedido, f.condicion, f.producto, f.cobranza, f.cuotas, f.cobranzaAuto,
+        f.canal, f.precioUnitario, f.costo === undefined ? '' : f.costo,
+        (costo && pu !== null) ? (pu - costo) / costo : '',
+        f.lista, f.pvm, f.esperado, f.regla || '', cuotasEsParaResumen_(f) ? 'Revisar' : 'OK',
+        f.observaciones || '', ahora, clave
+      ]
+    });
+  });
+  if (!nuevas.length) return 0;
+  nuevas.sort(function (a, b) { return a.ms - b.ms; });   // mas antiguas primero
+  const valores = nuevas.map(function (n) { return n.fila; });
+  const inicio = Math.max(sh.getLastRow(), 1) + 1;
+  sh.getRange(inicio, 1, valores.length, nCols).setValues(valores);
+  const enc = CUOTAS_CFG.ENCABEZADO_HISTORIAL;
+  sh.getRange(inicio, 1, valores.length, 1).setNumberFormat('dd/MM/yyyy');
+  sh.getRange(inicio, enc.indexOf('% sobre costo') + 1, valores.length, 1).setNumberFormat('0.0%');
+  sh.getRange(inicio, enc.indexOf('Registrado') + 1, valores.length, 1).setNumberFormat(CUOTAS_CFG.FORMATO_FECHA_HORA);
+  cuotasLog_('INFO', 'Historial: ' + valores.length + ' ventas nuevas registradas');
+  return valores.length;
 }
 
 // =========================== QR MERCADOPAGO ===========================
