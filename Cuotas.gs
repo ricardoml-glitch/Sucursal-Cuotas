@@ -20,6 +20,9 @@ const CUOTAS_CFG = {
     lista: 'Precio', pvm: 'PVM', canal: 'Canal de venta', referencia: 'Referenia'
   },
 
+  // Encabezados opcionales de VS (si existen se leen; si no, ese dato queda vacio)
+  VS_OPCIONALES: { costo: 'Costo producto' },
+
   // Columnas de Resumen (A:H). La columna I (hoy/ayer) no se toca.
   ENCABEZADO_RESUMEN: [
     'Fecha', 'Sucursal', 'Pedido: ID', 'Condición Comercial', 'Producto', 'Precio Unitario',
@@ -152,6 +155,10 @@ function cuotasLeerVS_(ss, reglas) {
     if (i < 0) throw new Error('VS: no existe la columna "' + CUOTAS_CFG.VS[k] + '"');
     col[k] = i;
   });
+  Object.keys(CUOTAS_CFG.VS_OPCIONALES).forEach(function (k) {
+    const i = enc.indexOf(CUOTAS_CFG.VS_OPCIONALES[k]);
+    if (i >= 0) col[k] = i;
+  });
   const snapshots = cuotasLeerReglasAplicadas_(ss);
   const nuevos = [];
   const filas = [];
@@ -187,6 +194,8 @@ function cuotasLeerVS_(ss, reglas) {
     }
     Object.assign(fila, evaluarFila_(fila, reglasFila));
     fila.clave = clave;
+    fila.reglaCongelada = regla || null;   // regla de la condicion vigente cuando se evaluo el pedido por primera vez
+    fila.filaVS = r + 1;
     filas.push(fila);
   }
   cuotasGuardarReglasAplicadas_(ss, nuevos);
