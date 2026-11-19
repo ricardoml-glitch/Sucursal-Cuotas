@@ -68,6 +68,9 @@ const CUOTAS_CFG = {
   HOJA_VENDEDORES: 'Vendedores',               // vendedores de los locales (con la sucursal)
   HOJA_VENDEDORES_ONLINE: 'Vendedores Online', // vendedores online, en un informe aparte
   VENDEDORES_ONLINE: ['A Asignar', 'Rocio', 'Marcos P', 'Ricardo Leon', 'Micaela'],
+  // Sucursales de VS que en realidad son ventas online: van a "Vendedores Online" y en Analisis se agrupan como ONLINE
+  SUCURSALES_ONLINE: ['FACT ELECTRONICA', 'FULFILLMENT'],
+  SUCURSAL_ONLINE_ETIQUETA: 'ONLINE',
   VENDEDOR_ENCABEZADO: 'Vendedor',
   VENDEDOR_SIN: '(sin vendedor)',
 
@@ -432,7 +435,8 @@ function cuotasActualizarConteo_(ss) {
     const texto = cuotasTextoPlan_(d[iPlan], iCond >= 0 ? d[iCond] : '');
     const clave = cuotasClave_(texto);
     if (!(clave in etiquetas)) etiquetas[clave] = texto;
-    const suc = String(d[iSucursal]).trim() || '(sin sucursal)';
+    let suc = String(d[iSucursal]).trim() || '(sin sucursal)';
+    if (cuotasEsSucursalOnline_(suc)) suc = CUOTAS_CFG.SUCURSAL_ONLINE_ETIQUETA;
     if (!meses[mes]) meses[mes] = {};
     if (!meses[mes][suc]) meses[mes][suc] = {};
     if (!meses[mes][suc][clave]) meses[mes][suc][clave] = {};
@@ -506,9 +510,14 @@ function cuotasActualizarVendedores_(ss) {
   if (enc.indexOf(CUOTAS_CFG.VS.fecha) < 0 || enc.indexOf(CUOTAS_CFG.VS.cobranza) < 0) throw new Error('Historial: faltan columnas Fecha o Cobranza');
   const online = {};
   CUOTAS_CFG.VENDEDORES_ONLINE.forEach(function (v) { online[cuotasClave_(v)] = true; });
-  const esOnline = function (v) { return !!online[cuotasClave_(v)]; };
-  cuotasArmarVendedores_(ss, datos, enc, CUOTAS_CFG.HOJA_VENDEDORES, true, function (v) { return !esOnline(v); });
+  const esOnline = function (v, suc) { return !!online[cuotasClave_(v)] || cuotasEsSucursalOnline_(suc); };
+  cuotasArmarVendedores_(ss, datos, enc, CUOTAS_CFG.HOJA_VENDEDORES, true, function (v, suc) { return !esOnline(v, suc); });
   cuotasArmarVendedores_(ss, datos, enc, CUOTAS_CFG.HOJA_VENDEDORES_ONLINE, false, esOnline);
+}
+
+function cuotasEsSucursalOnline_(suc) {
+  const c = cuotasClave_(suc);
+  return CUOTAS_CFG.SUCURSALES_ONLINE.some(function (x) { return cuotasClave_(x) === c; });
 }
 
 // Arma una hoja de vendedores con los vendedores que cumplen "incluir". conSucursal: agrega la sucursal a la tabla y un grafico por sucursal.
@@ -525,7 +534,7 @@ function cuotasArmarVendedores_(ss, datos, enc, nombreHoja, conSucursal, incluir
   for (let r = 1; r < datos.length; r++) {
     const d = datos[r];
     const vend = String(d[iVend]).trim() || sin;
-    if (!incluir(vend)) continue;
+    if (!incluir(vend, iSuc >= 0 ? String(d[iSuc]).trim() : '')) continue;
     const ms = cuotasFechaMs_(d[iFecha]);
     if (!ms) continue;
     const f = new Date(ms);
