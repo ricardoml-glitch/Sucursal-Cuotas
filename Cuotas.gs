@@ -138,21 +138,23 @@ const CUOTAS_CFG = {
 
   // Triggers (se instalan una vez con instalarTriggersCuotas)
   INTERVALO_HORAS: 1,   // Revisar se actualiza cada N horas
+  HORA_HISTORIAL: 3,    // el historial (y las hojas Analisis y Vendedores) se arma una vez por dia a esta hora
   ESPERA_LOCK_MS: 30000
 };
 
 // ============================ TRIGGERS ============================
 function instalarTriggersCuotas() {
   // Incluye los disparadores de versiones anteriores (Ventas para Revisar, menu Revision) para no dejarlos huerfanos
-  const manejadores = ['actualizarResumenCuotas', 'menuCuotas', 'revisarQRMercadopago',
+  const manejadores = ['actualizarResumenCuotas', 'actualizarHistorialCuotas', 'menuCuotas', 'revisarQRMercadopago',
                        'ventasParaRevisarCiclo', 'checkAndNotifyOffPrice', 'menuRevision'];
   ScriptApp.getProjectTriggers()
     .filter(function (t) { return manejadores.indexOf(t.getHandlerFunction()) >= 0; })
     .forEach(function (t) { ScriptApp.deleteTrigger(t); });
   ScriptApp.newTrigger('actualizarResumenCuotas').timeBased().everyHours(CUOTAS_CFG.INTERVALO_HORAS).create();
+  ScriptApp.newTrigger('actualizarHistorialCuotas').timeBased().atHour(CUOTAS_CFG.HORA_HISTORIAL).everyDays(1).create();
   // Menu como trigger instalable: no pisa un onOpen que ya exista en el proyecto
   ScriptApp.newTrigger('menuCuotas').forSpreadsheet(SpreadsheetApp.getActive()).onOpen().create();
-  cuotasLog_('INFO', 'Triggers instalados: Revisar cada ' + CUOTAS_CFG.INTERVALO_HORAS + ' h (incluye QR Mercadopago) y menu Cuotas');
+  cuotasLog_('INFO', 'Triggers instalados: Revisar cada ' + CUOTAS_CFG.INTERVALO_HORAS + ' h (incluye QR Mercadopago), historial diario a las ' + CUOTAS_CFG.HORA_HISTORIAL + ':00 y menu Cuotas');
 }
 
 // ============================= MENU =============================
@@ -160,6 +162,7 @@ function menuCuotas() {
   SpreadsheetApp.getUi()
     .createMenu('Cuotas')
     .addItem('Actualizar Revisar', 'actualizarResumenCuotas')
+    .addItem('Actualizar Historial', 'actualizarHistorialCuotas')
     .addItem('Ver Log', 'irALogCuotas')
     .addToUi();
 }
@@ -183,9 +186,6 @@ function actualizarResumenCuotas() {
     const reglas = cuotasLeerReglas_(ss);
     const filas = cuotasLeerVS_(ss, reglas);
     const revisar = filas.filter(cuotasEsParaResumen_);
-    try { cuotasRegistrarHistorial_(ss, filas); } catch (e) { cuotasLog_('ERROR', 'Historial: ' + e.message); }
-    try { cuotasActualizarConteo_(ss); } catch (e) { cuotasLog_('ERROR', 'Conteo Cuotas: ' + e.message); }
-    try { cuotasActualizarVendedores_(ss); } catch (e) { cuotasLog_('ERROR', 'Vendedores: ' + e.message); }
     const qr = cuotasLeerQR_(ss);      // pedidos de QR Mercadopago con descuento mal aplicado
     qr.forEach(function (f) { revisar.push(f); });
     const avisados = cuotasProcesarDetectados_(ss, revisar, cuotasSemillaQR_(ss));
@@ -576,6 +576,31 @@ function cuotasSemillaQR_(ss) {
   const semilla = {};
   Object.keys(viejo).forEach(function (id) { semilla['qr||' + cuotasClave_(id)] = viejo[id]; });
   return semilla;
+}
+
+// Se ejecuta una vez por dia (disparador de las 3 AM; tambien desde el menu): guarda en Historial las ventas de VS
+// hasta ayer y rearma las hojas Analisis y Vendedores.
+function actualizarHistorialCuotas() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(CUOTAS_CFG.ESPERA_LOCK_MS)) {
+    cuotasLog_('WARN', 'Historial: otra ejecucion en curso, se omite');
+    return;
+  }
+  const t0 = Date.now();
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const filas = cuotasLeerVS_(ss, cuotasLeerReglas_(ss));
+    let nuevas = 0;
+    try { nuevas = cuotasRegistrarHistorial_(ss, filas); } catch (e) { cuotasLog_('ERROR', 'Historial: ' + e.message); }
+    try { cuotasActualizarConteo_(ss); } catch (e) { cuotasLog_('ERROR', 'Analisis: ' + e.message); }
+    try { cuotasActualizarVendedores_(ss); } catch (e) { cuotasLog_('ERROR', 'Vendedores: ' + e.message); }
+    cuotasLog_('OK', 'Historial: ' + nuevas + ' ventas nuevas | ' + (Date.now() - t0) + ' ms');
+  } catch (e) {
+    cuotasLog_('ERROR', 'Historial: ' + e.message);
+    throw e;
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // =========================== LECTURA ===========================
