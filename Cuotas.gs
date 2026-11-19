@@ -55,6 +55,13 @@ const CUOTAS_CFG = {
   GRAFICOS_VENDEDORES: 8,          // vendedores que se muestran en el grafico de evolucion por vendedor
   GRAFICO_ALTO: 300, GRAFICO_ANCHO: 640,
   CONTEO_SIN_PLAN: 'Sin plan',   // cobranza vacia, X o con error
+  // Cuando la cobranza no trae el plan (vacia, X o #N/A) se usa la condicion comercial para contarla:
+  // por ejemplo GoCuotas cargado a mano porque el sistema no trajo el pago. condicion = texto que contiene el nombre.
+  CONTEO_PLAN_POR_CONDICION: [
+    { condicion: 'GoCuotas', plan: 'GoCuotas' },
+    { condicion: 'Deposito', plan: 'Deposito Bancario' },
+    { condicion: 'MODO', plan: 'MODO' }
+  ],
 
   // Hoja de vendedores: por mes y vendedor, productos vendidos (lineas de VS) y su detalle por plan de pago.
   // Toma la columna "Vendedor" de VS (via Historial).
@@ -257,7 +264,8 @@ function cuotasRegistrarHistorial_(ss, filas) {
       const iPlan = encVS.indexOf(CUOTAS_CFG.VS.cobranza), iVend = encVS.indexOf(CUOTAS_CFG.VENDEDOR_ENCABEZADO);
       const plan = iPlan >= 0 ? String(crudo[iPlan]).trim() : 'ok';
       const vend = iVend >= 0 ? String(crudo[iVend]).trim() : 'ok';
-      if (plan === '' || plan.toUpperCase() === 'X' || plan.charAt(0) === '#' || vend.charAt(0) === '#') return;
+      const explicaCond = cuotasPlanPorCondicion_(f.condicion) !== '';   // GoCuotas, Deposito, MODO: el plan sale de la condicion
+      if (!explicaCond && (plan === '' || plan.toUpperCase() === 'X' || plan.charAt(0) === '#') || vend.charAt(0) === '#') return;
     }
     existentes[clave] = true;
     const datos = {
@@ -358,10 +366,23 @@ function cuotasEscribirAnalisis_(ss, nombre, nombreAnterior, tituloDetalle, enca
 }
 
 // Texto del plan de pago para contar: la cobranza tal cual, o "Sin plan" si esta vacia, es X o trae un error
-function cuotasTextoPlan_(valor) {
+function cuotasTextoPlan_(valor, condicion) {
   const texto = String(valor).trim();
   const clave = cuotasClave_(texto);
-  return (clave === '' || clave === 'x' || texto.charAt(0) === '#') ? CUOTAS_CFG.CONTEO_SIN_PLAN : texto;
+  if (clave !== '' && clave !== 'x' && texto.charAt(0) !== '#') return texto;
+  const plan = cuotasPlanPorCondicion_(condicion);
+  return plan || CUOTAS_CFG.CONTEO_SIN_PLAN;
+}
+
+// Plan que corresponde a la condicion comercial cuando la cobranza no lo trae ('' si no aplica)
+function cuotasPlanPorCondicion_(condicion) {
+  const c = cuotasClave_(condicion);
+  if (c === '') return '';
+  const lista = CUOTAS_CFG.CONTEO_PLAN_POR_CONDICION;
+  for (let i = 0; i < lista.length; i++) {
+    if (c.indexOf(cuotasClave_(lista[i].condicion)) >= 0) return lista[i].plan;
+  }
+  return '';
 }
 
 // Orden de columnas de planes: efectivo, luego cuotas de menor a mayor, otros, y "Sin plan" al final
@@ -388,6 +409,7 @@ function cuotasActualizarConteo_(ss) {
   const iPedido = enc.indexOf(CUOTAS_CFG.VS.pedido);
   const iPlan = enc.indexOf(CUOTAS_CFG.VS.cobranza);
   const iSucursal = enc.indexOf(CUOTAS_CFG.VS.sucursal);
+  const iCond = enc.indexOf(CUOTAS_CFG.VS.condicion);
   if (iFecha < 0 || iPedido < 0 || iPlan < 0 || iSucursal < 0) throw new Error('Historial: faltan columnas Fecha, Sucursal, Pedido: ID o Cobranza');
 
   const etiquetas = {};   // clave del plan -> texto a mostrar
@@ -399,7 +421,7 @@ function cuotasActualizarConteo_(ss) {
     if (pedido === '' || !ms) continue;
     const f = new Date(ms);
     const mes = f.getFullYear() * 100 + (f.getMonth() + 1);
-    const texto = cuotasTextoPlan_(d[iPlan]);
+    const texto = cuotasTextoPlan_(d[iPlan], iCond >= 0 ? d[iCond] : '');
     const clave = cuotasClave_(texto);
     if (!(clave in etiquetas)) etiquetas[clave] = texto;
     const suc = String(d[iSucursal]).trim() || '(sin sucursal)';
@@ -476,6 +498,7 @@ function cuotasActualizarVendedores_(ss) {
   if (iVend < 0) return;   // VS todavia no tiene la columna Vendedor
   const iFecha = enc.indexOf(CUOTAS_CFG.VS.fecha);
   const iPlan = enc.indexOf(CUOTAS_CFG.VS.cobranza);
+  const iCond = enc.indexOf(CUOTAS_CFG.VS.condicion);
   if (iFecha < 0 || iPlan < 0) throw new Error('Historial: faltan columnas Fecha o Cobranza');
 
   const etiquetas = {};
@@ -486,7 +509,7 @@ function cuotasActualizarVendedores_(ss) {
     if (!ms) continue;
     const f = new Date(ms);
     const mes = f.getFullYear() * 100 + (f.getMonth() + 1);
-    const texto = cuotasTextoPlan_(d[iPlan]);
+    const texto = cuotasTextoPlan_(d[iPlan], iCond >= 0 ? d[iCond] : '');
     const clave = cuotasClave_(texto);
     if (!(clave in etiquetas)) etiquetas[clave] = texto;
     const vend = String(d[iVend]).trim() || CUOTAS_CFG.VENDEDOR_SIN;
