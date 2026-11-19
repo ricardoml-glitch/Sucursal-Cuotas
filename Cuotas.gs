@@ -124,11 +124,9 @@ function instalarTriggersCuotas() {
     .filter(function (t) { return manejadores.indexOf(t.getHandlerFunction()) >= 0; })
     .forEach(function (t) { ScriptApp.deleteTrigger(t); });
   ScriptApp.newTrigger('actualizarResumenCuotas').timeBased().everyHours(CUOTAS_CFG.INTERVALO_HORAS).create();
-  ScriptApp.newTrigger(QR_HANDLER).timeBased().everyHours(QR_TRIGGER_CADA_HORAS).create();
   // Menu como trigger instalable: no pisa un onOpen que ya exista en el proyecto
   ScriptApp.newTrigger('menuCuotas').forSpreadsheet(SpreadsheetApp.getActive()).onOpen().create();
-  cuotasLog_('INFO', 'Triggers instalados: Revisar cada ' + CUOTAS_CFG.INTERVALO_HORAS + ' h, QR Mercadopago cada ' +
-             QR_TRIGGER_CADA_HORAS + ' h y menu Cuotas');
+  cuotasLog_('INFO', 'Triggers instalados: Revisar cada ' + CUOTAS_CFG.INTERVALO_HORAS + ' h (incluye QR Mercadopago) y menu Cuotas');
 }
 
 // ============================= MENU =============================
@@ -136,7 +134,6 @@ function menuCuotas() {
   SpreadsheetApp.getUi()
     .createMenu('Cuotas')
     .addItem('Actualizar Revisar', 'actualizarResumenCuotas')
-    .addItem('Revisar QR Mercadopago', 'revisarQRMercadopago')
     .addItem('Ver Log', 'irALogCuotas')
     .addToUi();
 }
@@ -160,9 +157,9 @@ function actualizarResumenCuotas() {
     const reglas = cuotasLeerReglas_(ss);
     const filas = cuotasLeerVS_(ss, reglas);
     const revisar = filas.filter(cuotasEsParaResumen_);
-    const avisados = cuotasProcesarDetectados_(ss, revisar);
-    const qr = cuotasLeerQRMal_(ss);   // pedidos de QR Mercadopago mal cobrados (ya avisados por su propio mail)
+    const qr = cuotasLeerQR_(ss);      // pedidos de QR Mercadopago con descuento mal aplicado
     qr.forEach(function (f) { revisar.push(f); });
+    const avisados = cuotasProcesarDetectados_(ss, revisar, cuotasSemillaQR_(ss));
     revisar.sort(function (a, b) { return cuotasFechaMs_(b.fecha) - cuotasFechaMs_(a.fecha); });
     cuotasEscribirResumen_(ss, revisar);
     cuotasLog_('OK', 'VS: ' + filas.length + ' filas leidas | QR mal cobrado: ' + qr.length + ' | Revisar: ' + revisar.length + ' | Avisados: ' + avisados + ' | ' + (Date.now() - t0) + ' ms');
@@ -174,27 +171,26 @@ function actualizarResumenCuotas() {
   }
 }
 
-// =========================== QR MAL COBRADO ===========================
-// "QR mal cobrado" (QRMercadopago.gs) es el registro de los pedidos de QR Mercadopago con descuento mal aplicado.
-// Se muestran en Revisar con el motivo en Observaciones. El mail de esos pedidos lo manda revisarQRMercadopago.
-function cuotasLeerQRMal_(ss) {
-  const sh = ss.getSheetByName(QR_MAL_SHEET_NAME);
-  if (!sh || sh.getLastRow() < 2) return [];
-  const datos = sh.getDataRange().getValues();
-  const filas = [];
-  for (let r = 1; r < datos.length; r++) {
-    const d = datos[r];
-    const pedido = String(d[QR_MAL_COL_PEDIDO - 1]).trim();
-    if (!pedido) continue;
-    filas.push({
-      fecha: d[QR_MAL_COL_FECHA - 1], sucursal: d[QR_MAL_COL_SUCURSAL - 1], pedido: pedido,
-      condicion: CUOTAS_CFG.QR_CONDICION, producto: '(pedido completo)',
-      precioUnitario: d[QR_MAL_COL_TOTAL - 1], cuotas: '', canal: 'QR Mercadopago',
-      esperado: '', regla: 'QR Mercadopago', aplicado: '',
-      detectado: d[QR_MAL_NUM_COLS - 1], observaciones: String(d[5])
-    });
-  }
-  return filas;
+// =========================== QR MERCADOPAGO ===========================
+// Los pedidos de QR Mercadopago con descuento mal aplicado (reglas en QRMercadopago.gs) se muestran en Revisar
+// con el motivo en Observaciones y se avisan por el mismo mail que el resto.
+function cuotasLeerQR_(ss) {
+  return qrEvaluarPedidos_(ss).map(function (p) {
+    return {
+      fecha: p.fecha, sucursal: p.sucursal, pedido: p.id, condicion: CUOTAS_CFG.QR_CONDICION,
+      producto: '(pedido completo)', precioUnitario: p.total, cuotas: '', canal: 'QR Mercadopago',
+      esperado: '', regla: 'QR Mercadopago', aplicado: '', observaciones: p.motivo,
+      clave: 'qr||' + cuotasClave_(p.id)
+    };
+  });
+}
+
+// Pedidos que ya estaban en la vieja hoja "QR mal cobrado": se registran como ya avisados
+function cuotasSemillaQR_(ss) {
+  const viejo = qrLeerRegistroViejo_(ss);
+  const semilla = {};
+  Object.keys(viejo).forEach(function (id) { semilla['qr||' + cuotasClave_(id)] = viejo[id]; });
+  return semilla;
 }
 
 // =========================== LECTURA ===========================
@@ -295,7 +291,7 @@ function cuotasGuardarReglasAplicadas_(ss, nuevos) {
 // ====================== REGISTRO DE DETECCION ======================
 // Guarda cuando se detecto por primera vez cada pedido a revisar (queda en f.detectado) y avisa por mail
 // los que todavia no se avisaron. Devuelve la cantidad de pedidos avisados.
-function cuotasProcesarDetectados_(ss, filas) {
+function cuotasProcesarDetectados_(ss, filas, semilla) {
   const nCols = CUOTAS_CFG.ENCABEZADO_DETECTADOS.length;
   const sh = ss.getSheetByName(CUOTAS_CFG.HOJA_DETECTADOS) || ss.insertSheet(CUOTAS_CFG.HOJA_DETECTADOS);
   if (sh.getLastRow() === 0) sh.getRange(1, 1, 1, nCols).setValues([CUOTAS_CFG.ENCABEZADO_DETECTADOS]);
@@ -311,6 +307,14 @@ function cuotasProcesarDetectados_(ss, filas) {
     indice[String(datos[r][0])] = registros.length;
     registros.push([datos[r][0], datos[r][1], avisado]);
   }
+  // Registros que ya existian en una version anterior: figuran como detectados y avisados
+  Object.keys(semilla || {}).forEach(function (k) {
+    if (!(k in indice)) {
+      const d = semilla[k] instanceof Date ? semilla[k] : new Date();
+      indice[k] = registros.length;
+      registros.push([k, d, d]);
+    }
+  });
   const ahora = new Date();
   const pendientes = [];
   filas.forEach(function (f) {
@@ -338,8 +342,10 @@ function cuotasProcesarDetectados_(ss, filas) {
 
   // Limpieza de registros viejos y guardado
   const limite = Date.now() - CUOTAS_CFG.RETENCION_DIAS * 24 * 3600 * 1000;
-  const vigentes = registros.filter(function (g) {
-    return !(g[1] instanceof Date) || g[1].getTime() >= limite;
+  const actuales = {};
+  filas.forEach(function (f) { actuales[f.clave] = true; });
+  const vigentes = registros.filter(function (g) {   // lo que sigue en Revisar no se borra, para no volver a avisarlo
+    return actuales[g[0]] || !(g[1] instanceof Date) || g[1].getTime() >= limite;
   });
   sh.getRange(1, 1, 1, nCols).setValues([CUOTAS_CFG.ENCABEZADO_DETECTADOS]);
   sh.getRange(2, 1, Math.max(sh.getMaxRows() - 1, 1), nCols).clearContent();
