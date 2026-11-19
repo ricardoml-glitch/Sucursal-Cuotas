@@ -43,6 +43,10 @@ const CUOTAS_CFG = {
   // Despues van estas columnas de control, que ponen el script:
   ENCABEZADO_HISTORIAL_EXTRA: ['Precio esperado', 'Regla aplicada', 'Estado', 'Observaciones', 'Registrado', 'Clave'],
 
+  // Hoja de conteo mensual: cantidad de operaciones (pedidos) por plan de pago, calculada desde Historial
+  HOJA_CONTEO: 'Cuotas',
+  CONTEO_SIN_PLAN: 'Sin plan',   // cobranza vacia, X o con error
+
   // Registro de cuando se detecto cada pedido a revisar (se conserva la primera vez)
   HOJA_DETECTADOS: 'Detectados',
   ENCABEZADO_DETECTADOS: ['Clave', 'Detectado', 'Avisado'],
@@ -165,6 +169,7 @@ function actualizarResumenCuotas() {
     const filas = cuotasLeerVS_(ss, reglas);
     const revisar = filas.filter(cuotasEsParaResumen_);
     try { cuotasRegistrarHistorial_(ss, filas); } catch (e) { cuotasLog_('ERROR', 'Historial: ' + e.message); }
+    try { cuotasActualizarConteo_(ss); } catch (e) { cuotasLog_('ERROR', 'Conteo Cuotas: ' + e.message); }
     const qr = cuotasLeerQR_(ss);      // pedidos de QR Mercadopago con descuento mal aplicado
     qr.forEach(function (f) { revisar.push(f); });
     const avisados = cuotasProcesarDetectados_(ss, revisar, cuotasSemillaQR_(ss));
@@ -249,6 +254,74 @@ function cuotasRegistrarHistorial_(ss, filas) {
   sh.getRange(inicio, colRegistrado, valores.length, 1).setNumberFormat(CUOTAS_CFG.FORMATO_FECHA_HORA);
   cuotasLog_('INFO', 'Historial: ' + valores.length + ' ventas nuevas registradas');
   return valores.length;
+}
+
+// =========================== CONTEO MENSUAL ===========================
+// Hoja "Cuotas": por mes, cuantas operaciones (pedidos) hubo en cada plan de pago (efectivo, 01 Cuota, 12 Cuotas, ...).
+// Se calcula desde "Historial" (columnas Fecha, Pedido: ID y Cobranza), asi acumula todo el historico.
+// Un pedido se cuenta una vez por plan y mes (si tiene varios productos con el mismo plan, es una operacion).
+function cuotasActualizarConteo_(ss) {
+  const hist = ss.getSheetByName(CUOTAS_CFG.HOJA_HISTORIAL);
+  if (!hist || hist.getLastRow() < 2) return;
+  const datos = hist.getDataRange().getValues();
+  const enc = datos[0].map(function (h) { return String(h).trim(); });
+  const iFecha = enc.indexOf(CUOTAS_CFG.VS.fecha);
+  const iPedido = enc.indexOf(CUOTAS_CFG.VS.pedido);
+  const iPlan = enc.indexOf(CUOTAS_CFG.VS.cobranza);
+  if (iFecha < 0 || iPedido < 0 || iPlan < 0) throw new Error('Historial: faltan columnas Fecha, Pedido: ID o Cobranza');
+
+  const etiquetas = {};   // clave del plan -> texto a mostrar
+  const meses = {};       // mes (yyyy-MM) -> { plan -> {pedido: true} }
+  for (let r = 1; r < datos.length; r++) {
+    const d = datos[r];
+    const pedido = String(d[iPedido]).trim();
+    const ms = cuotasFechaMs_(d[iFecha]);
+    if (pedido === '' || !ms) continue;
+    const f = new Date(ms);
+    const mes = f.getFullYear() * 100 + (f.getMonth() + 1);
+    let texto = String(d[iPlan]).trim();
+    const clave0 = cuotasClave_(texto);
+    if (clave0 === '' || clave0 === 'x' || texto.charAt(0) === '#') texto = CUOTAS_CFG.CONTEO_SIN_PLAN;
+    const clave = cuotasClave_(texto);
+    if (!(clave in etiquetas)) etiquetas[clave] = texto;
+    if (!meses[mes]) meses[mes] = {};
+    if (!meses[mes][clave]) meses[mes][clave] = {};
+    meses[mes][clave][pedido] = true;
+  }
+
+  // Orden de columnas: efectivo, luego cuotas de menor a mayor, otros, y "Sin plan" al final
+  const sinPlan = cuotasClave_(CUOTAS_CFG.CONTEO_SIN_PLAN);
+  const orden = function (k) {
+    if (k === sinPlan) return [3, 0, k];
+    if (k.indexOf('efectivo') >= 0) return [0, 0, k];
+    const m = k.match(/\d+/);
+    return m ? [1, parseInt(m[0], 10), k] : [2, 0, k];
+  };
+  const planes = Object.keys(etiquetas).sort(function (a, b) {
+    const x = orden(a), y = orden(b);
+    return x[0] - y[0] || x[1] - y[1] || (x[2] < y[2] ? -1 : x[2] > y[2] ? 1 : 0);
+  });
+  const clavesMes = Object.keys(meses).map(Number).sort(function (a, b) { return b - a; });   // mas reciente primero
+
+  const encabezado = ['Mes'].concat(planes.map(function (k) { return etiquetas[k]; }), ['Total operaciones']);
+  const filas = clavesMes.map(function (m) {
+    const anio = Math.floor(m / 100), mes = m % 100;
+    const cantidades = planes.map(function (k) { return meses[m][k] ? Object.keys(meses[m][k]).length : 0; });
+    // Total = pedidos distintos del mes (un pedido con dos planes distintos cuenta una vez)
+    const todos = {};
+    planes.forEach(function (k) { if (meses[m][k]) Object.keys(meses[m][k]).forEach(function (p) { todos[p] = true; }); });
+    return [new Date(anio, mes - 1, 1)].concat(cantidades, [Object.keys(todos).length]);
+  });
+
+  let sh = ss.getSheetByName(CUOTAS_CFG.HOJA_CONTEO);
+  if (!sh) sh = ss.insertSheet(CUOTAS_CFG.HOJA_CONTEO);
+  sh.getRange(1, 1, sh.getMaxRows(), Math.max(sh.getMaxColumns(), encabezado.length)).clearContent();
+  sh.getRange(1, 1, 1, encabezado.length).setValues([encabezado]);
+  sh.setFrozenRows(1);
+  if (filas.length) {
+    sh.getRange(2, 1, filas.length, encabezado.length).setValues(filas);
+    sh.getRange(2, 1, filas.length, 1).setNumberFormat('MM/yyyy');
+  }
 }
 
 // =========================== QR MERCADOPAGO ===========================
