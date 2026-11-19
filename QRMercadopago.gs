@@ -176,6 +176,8 @@ function revisarQRMercadopago() {
   } finally {
     lock.releaseLock();
   }
+  // Actualiza Revisar para que los QR nuevos aparezcan enseguida (usa su propio lock)
+  try { actualizarResumenCuotas(); } catch (e) { console.error('revisarQRMercadopago: no se pudo actualizar Revisar: ' + e.message); }
 }
 
 // Un solo mail con todos los pedidos mal cobrados nuevos

@@ -103,6 +103,8 @@ const CUOTAS_CFG = {
   RESUMEN_CANAL_WEB: 'PaginaWeb',          // PaginaWeb solo entra si la referencia contiene el texto de abajo
   RESUMEN_WEB_REFERENCIA: 'mostrador',
 
+  QR_CONDICION: 'QR Mercadopago',   // condicion que se muestra en Revisar para los pedidos de QR mal cobrado
+
   // Aviso por mail de los pedidos nuevos a revisar (un solo mail con todos los nuevos)
   MAIL_ACTIVO: true,
   MAIL_PARA: 'ricardoml@tiomusa.com.ar',
@@ -159,15 +161,40 @@ function actualizarResumenCuotas() {
     const filas = cuotasLeerVS_(ss, reglas);
     const revisar = filas.filter(cuotasEsParaResumen_);
     const avisados = cuotasProcesarDetectados_(ss, revisar);
+    const qr = cuotasLeerQRMal_(ss);   // pedidos de QR Mercadopago mal cobrados (ya avisados por su propio mail)
+    qr.forEach(function (f) { revisar.push(f); });
     revisar.sort(function (a, b) { return cuotasFechaMs_(b.fecha) - cuotasFechaMs_(a.fecha); });
     cuotasEscribirResumen_(ss, revisar);
-    cuotasLog_('OK', 'VS: ' + filas.length + ' filas leidas | Revisar: ' + revisar.length + ' | Avisados: ' + avisados + ' | ' + (Date.now() - t0) + ' ms');
+    cuotasLog_('OK', 'VS: ' + filas.length + ' filas leidas | QR mal cobrado: ' + qr.length + ' | Revisar: ' + revisar.length + ' | Avisados: ' + avisados + ' | ' + (Date.now() - t0) + ' ms');
   } catch (e) {
     cuotasLog_('ERROR', e.message + (e.stack ? ' | ' + e.stack.split('\n')[1] : ''));
     throw e;
   } finally {
     lock.releaseLock();
   }
+}
+
+// =========================== QR MAL COBRADO ===========================
+// "QR mal cobrado" (QRMercadopago.gs) es el registro de los pedidos de QR Mercadopago con descuento mal aplicado.
+// Se muestran en Revisar con el motivo en Observaciones. El mail de esos pedidos lo manda revisarQRMercadopago.
+function cuotasLeerQRMal_(ss) {
+  const sh = ss.getSheetByName(QR_MAL_SHEET_NAME);
+  if (!sh || sh.getLastRow() < 2) return [];
+  const datos = sh.getDataRange().getValues();
+  const filas = [];
+  for (let r = 1; r < datos.length; r++) {
+    const d = datos[r];
+    const pedido = String(d[QR_MAL_COL_PEDIDO - 1]).trim();
+    if (!pedido) continue;
+    filas.push({
+      fecha: d[QR_MAL_COL_FECHA - 1], sucursal: d[QR_MAL_COL_SUCURSAL - 1], pedido: pedido,
+      condicion: CUOTAS_CFG.QR_CONDICION, producto: '(pedido completo)',
+      precioUnitario: d[QR_MAL_COL_TOTAL - 1], cuotas: '', canal: 'QR Mercadopago',
+      esperado: '', regla: 'QR Mercadopago', aplicado: '',
+      detectado: d[QR_MAL_NUM_COLS - 1], observaciones: String(d[5])
+    });
+  }
+  return filas;
 }
 
 // =========================== LECTURA ===========================
