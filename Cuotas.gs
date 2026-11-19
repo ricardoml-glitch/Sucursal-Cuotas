@@ -39,11 +39,9 @@ const CUOTAS_CFG = {
   // Historial de ventas: cada fila de VS se guarda una sola vez (VS solo trae los ultimos dias) con lo que decia
   // en ese momento, mas el resultado de la revision. Nunca se borra ni se reescribe.
   HOJA_HISTORIAL: 'Historial',
-  ENCABEZADO_HISTORIAL: [
-    'Fecha', 'Sucursal', 'Pedido: ID', 'Condición Comercial', 'Producto', 'Plan de pago', 'Cuotas', 'Cobranza automática',
-    'Canal de venta', 'Precio Unitario', 'Costo producto', '% sobre costo', 'Precio lista', 'Precio mínimo (PVM)',
-    'Precio esperado', 'Regla aplicada', 'Estado', 'Observaciones', 'Registrado', 'Clave'
-  ],
+  // Las columnas de VS se copian tal cual (mismo orden y encabezados; si VS agrega una, se agrega aca tambien).
+  // Despues van estas columnas de control, que ponen el script:
+  ENCABEZADO_HISTORIAL_EXTRA: ['Precio esperado', 'Regla aplicada', 'Estado', 'Observaciones', 'Registrado', 'Clave'],
 
   // Registro de cuando se detecto cada pedido a revisar (se conserva la primera vez)
   HOJA_DETECTADOS: 'Detectados',
@@ -182,17 +180,39 @@ function actualizarResumenCuotas() {
 }
 
 // =========================== HISTORIAL ===========================
-// Agrega al final de "Historial" las filas de VS que todavia no estaban (clave pedido||producto||condicion;
-// si una misma venta trae lineas identicas se distinguen por orden). Devuelve cuantas agrego.
+// Copia a "Historial" cada fila de VS que todavia no estaba: todas las columnas de VS tal cual, mas las columnas de
+// control (precio esperado, regla, estado, observaciones, cuando se registro y la clave). Cada venta se guarda una
+// sola vez (clave pedido||producto||condicion; lineas identicas se distinguen por orden) y no se vuelve a tocar.
 function cuotasRegistrarHistorial_(ss, filas) {
-  const nCols = CUOTAS_CFG.ENCABEZADO_HISTORIAL.length;
-  const colClave = nCols;
+  const extra = CUOTAS_CFG.ENCABEZADO_HISTORIAL_EXTRA;
+  const vs = ss.getSheetByName(CUOTAS_CFG.HOJA_VS).getDataRange().getValues();
+  const encVS = vs[0].map(function (h) { return String(h).trim(); });
+  const colsVS = [];   // columnas de VS con encabezado, sin repetir
+  encVS.forEach(function (h, i) { if (h !== '' && encVS.indexOf(h) === i) colsVS.push(h); });
+
   let sh = ss.getSheetByName(CUOTAS_CFG.HOJA_HISTORIAL);
+  if (sh && sh.getLastRow() > 0 && String(sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].join('|')).indexOf('Plan de pago') >= 0) {
+    sh.setName(CUOTAS_CFG.HOJA_HISTORIAL + ' (version anterior)');   // formato de una version previa: se conserva aparte
+    sh = null;
+  }
   if (!sh) sh = ss.insertSheet(CUOTAS_CFG.HOJA_HISTORIAL);
   if (sh.getLastRow() === 0) {
-    sh.getRange(1, 1, 1, nCols).setValues([CUOTAS_CFG.ENCABEZADO_HISTORIAL]);
+    sh.getRange(1, 1, 1, colsVS.length + extra.length).setValues([colsVS.concat(extra)]);
     sh.setFrozenRows(1);
   }
+  let enc = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
+  // Columnas nuevas en VS: se insertan antes de las columnas de control
+  colsVS.forEach(function (h) {
+    if (enc.indexOf(h) >= 0) return;
+    const pos = enc.indexOf(extra[0]) + 1;
+    sh.insertColumnsBefore(pos, 1);
+    sh.getRange(1, pos).setValue(h);
+    enc.splice(pos - 1, 0, h);
+  });
+  const colClave = enc.indexOf('Clave') + 1;
+  const colRegistrado = enc.indexOf('Registrado') + 1;
+  const colFecha = enc.indexOf(CUOTAS_CFG.VS.fecha) + 1;
+
   const existentes = {};
   const ultima = sh.getLastRow();
   if (ultima > 1) {
@@ -207,28 +227,26 @@ function cuotasRegistrarHistorial_(ss, filas) {
     const clave = f.clave + (repetidas[f.clave] > 1 ? '#' + repetidas[f.clave] : '');
     if (existentes[clave]) return;
     existentes[clave] = true;
-    const pu = cuotasANumero_(f.precioUnitario);
-    const costo = cuotasANumero_(f.costo);
-    nuevas.push({
-      ms: cuotasFechaMs_(f.fecha),
-      fila: [
-        f.fecha, f.sucursal, f.pedido, f.condicion, f.producto, f.cobranza, f.cuotas, f.cobranzaAuto,
-        f.canal, f.precioUnitario, f.costo === undefined ? '' : f.costo,
-        (costo && pu !== null) ? (pu - costo) / costo : '',
-        f.lista, f.pvm, f.esperado, f.regla || '', cuotasEsParaResumen_(f) ? 'Revisar' : 'OK',
-        f.observaciones || '', ahora, clave
-      ]
+    const crudo = vs[f.filaVS - 1];
+    const datos = {
+      'Precio esperado': f.esperado, 'Regla aplicada': f.regla || '',
+      'Estado': cuotasEsParaResumen_(f) ? 'Revisar' : 'OK', 'Observaciones': f.observaciones || '',
+      'Registrado': ahora, 'Clave': clave
+    };
+    const fila = enc.map(function (h) {
+      if (h in datos) return datos[h];
+      const i = encVS.indexOf(h);
+      return i >= 0 && crudo[i] !== undefined ? crudo[i] : '';
     });
+    nuevas.push({ ms: cuotasFechaMs_(f.fecha), fila: fila });
   });
   if (!nuevas.length) return 0;
   nuevas.sort(function (a, b) { return a.ms - b.ms; });   // mas antiguas primero
   const valores = nuevas.map(function (n) { return n.fila; });
   const inicio = Math.max(sh.getLastRow(), 1) + 1;
-  sh.getRange(inicio, 1, valores.length, nCols).setValues(valores);
-  const enc = CUOTAS_CFG.ENCABEZADO_HISTORIAL;
-  sh.getRange(inicio, 1, valores.length, 1).setNumberFormat('dd/MM/yyyy');
-  sh.getRange(inicio, enc.indexOf('% sobre costo') + 1, valores.length, 1).setNumberFormat('0.0%');
-  sh.getRange(inicio, enc.indexOf('Registrado') + 1, valores.length, 1).setNumberFormat(CUOTAS_CFG.FORMATO_FECHA_HORA);
+  sh.getRange(inicio, 1, valores.length, enc.length).setValues(valores);
+  if (colFecha > 0) sh.getRange(inicio, colFecha, valores.length, 1).setNumberFormat('dd/MM/yyyy');
+  sh.getRange(inicio, colRegistrado, valores.length, 1).setNumberFormat(CUOTAS_CFG.FORMATO_FECHA_HORA);
   cuotasLog_('INFO', 'Historial: ' + valores.length + ' ventas nuevas registradas');
   return valores.length;
 }
