@@ -51,9 +51,6 @@ const CUOTAS_CFG = {
   // Hoja de conteo mensual: cantidad de operaciones (pedidos) por plan de pago, calculada desde Historial
   HOJA_CONTEO: 'Análisis',
   HOJA_CONTEO_ANTERIOR: 'Cuotas',   // si existe con este nombre, se renombra
-  GRAFICOS_MESES: 12,              // meses que muestran los graficos (los ultimos)
-  GRAFICOS_VENDEDORES: 8,          // vendedores que se muestran en el grafico de evolucion por vendedor
-  GRAFICO_ALTO: 300, GRAFICO_ANCHO: 640,
   CONTEO_SIN_PLAN: 'Sin plan',   // cobranza vacia, X o con error
   // Cuando la cobranza no trae el plan (vacia, X o #N/A) se usa la condicion comercial para contarla:
   // por ejemplo GoCuotas cargado a mano porque el sistema no trajo el pago. condicion = texto que contiene el nombre.
@@ -310,78 +307,27 @@ function cuotasEtiquetaMes_(m) {
   return ('0' + (m % 100)).slice(-2) + '/' + Math.floor(m / 100);
 }
 
-// Arma una hoja de analisis: graficos arriba (dos por fila), despues la tabla de detalle y por ultimo los datos
-// que alimentan cada grafico. graficos: [{ titulo, cabecera, filas }] (primera columna = categorias, el resto = series).
-function cuotasEscribirAnalisis_(ss, nombre, nombreAnterior, tituloDetalle, encabezado, filas, graficos) {
+// Arma una hoja de analisis: titulo y tabla de detalle (sin graficos).
+function cuotasEscribirAnalisis_(ss, nombre, nombreAnterior, tituloDetalle, encabezado, filas) {
   let sh = ss.getSheetByName(nombre);
   if (!sh) {
     const anterior = nombreAnterior ? ss.getSheetByName(nombreAnterior) : null;
     if (anterior) { anterior.setName(nombre); sh = anterior; }
     else sh = ss.insertSheet(nombre);
   }
-  sh.getCharts().forEach(function (c) { sh.removeChart(c); });
+  sh.getCharts().forEach(function (c) { sh.removeChart(c); });   // saca los graficos de versiones anteriores
   sh.clear();
 
-  const FILAS_POR_GRAFICO = Math.ceil(CUOTAS_CFG.GRAFICO_ALTO / 21) + 1;
-  const filasGraficos = Math.ceil(graficos.length / 2) * FILAS_POR_GRAFICO;
-  const filaDetalle = filasGraficos + 2;                       // titulo del detalle
-  const filaTabla = filaDetalle + 1;                           // encabezado de la tabla
-  const filaDatos = filaTabla + filas.length + 3;              // titulo de los datos de graficos
-  let anchoMax = encabezado.length;
-  let filasDatos = 0;
-  graficos.forEach(function (g) {
-    anchoMax = Math.max(anchoMax, g.cabecera.length);
-    filasDatos += g.filas.length + 3;
-  });
-  const filasNecesarias = filaDatos + filasDatos + 2;
-  if (sh.getMaxRows() < filasNecesarias) sh.insertRowsAfter(sh.getMaxRows(), filasNecesarias - sh.getMaxRows());
-  if (sh.getMaxColumns() < Math.max(anchoMax, 15)) sh.insertColumnsAfter(sh.getMaxColumns(), Math.max(anchoMax, 15) - sh.getMaxColumns());
-  sh.setColumnWidths(1, 15, 100);
-
-  // Detalle
-  sh.getRange(filaDetalle, 1).setValue(tituloDetalle).setFontWeight('bold');
+  const filaTabla = 2;   // encabezado de la tabla (el titulo va en la fila 1)
+  if (sh.getMaxRows() < filaTabla + filas.length + 1) sh.insertRowsAfter(sh.getMaxRows(), filaTabla + filas.length + 1 - sh.getMaxRows());
+  if (sh.getMaxColumns() < encabezado.length) sh.insertColumnsAfter(sh.getMaxColumns(), encabezado.length - sh.getMaxColumns());
+  sh.getRange(1, 1).setValue(tituloDetalle).setFontWeight('bold');
   sh.getRange(filaTabla, 1, 1, encabezado.length).setValues([encabezado]).setFontWeight('bold');
   if (filas.length) {
     sh.getRange(filaTabla + 1, 1, filas.length, encabezado.length).setValues(filas);
     sh.getRange(filaTabla + 1, 1, filas.length, 1).setNumberFormat('MM/yyyy');
   }
-
-  // Datos de los graficos + graficos
-  if (graficos.length) sh.getRange(filaDatos, 1).setValue('Datos de los graficos (los usa el script, no editar)').setFontWeight('bold');
-  let fila = filaDatos + 1;
-  graficos.forEach(function (g, i) {
-    sh.getRange(fila, 1).setValue(g.titulo).setFontWeight('bold');
-    sh.getRange(fila + 1, 1, 1, g.cabecera.length).setValues([g.cabecera]);
-    let rango;
-    if (g.filas.length) {
-      sh.getRange(fila + 2, 1, g.filas.length, g.cabecera.length).setValues(g.filas);
-      rango = sh.getRange(fila + 1, 1, g.filas.length + 1, g.cabecera.length);
-    } else {
-      rango = sh.getRange(fila + 1, 1, 1, g.cabecera.length);
-    }
-    // La categoria lleva el total entre parentesis, asi se ve la cantidad aunque el grafico no muestre numeros
-    g.filas.forEach(function (fl) {
-      const tot = fl.slice(1).reduce(function (a, n) { return a + (typeof n === 'number' ? n : 0); }, 0);
-      fl[0] = fl[0] + ' (' + tot + ')';
-    });
-    if (g.filas.length) sh.getRange(fila + 2, 1, g.filas.length, 1).setValues(g.filas.map(function (fl) { return [fl[0]]; }));
-    const series = {};
-    for (let c = 0; c < g.cabecera.length - 1; c++) series[c] = { dataLabel: 'value' };
-    const grafico = sh.newChart()
-      .setChartType(Charts.ChartType.COLUMN)
-      .addRange(rango)
-      .setNumHeaders(1)
-      .setOption('title', g.titulo)
-      .setOption('isStacked', true)
-      .setOption('series', series)
-      .setOption('legend', { position: 'right' })
-      .setOption('width', CUOTAS_CFG.GRAFICO_ANCHO)
-      .setOption('height', CUOTAS_CFG.GRAFICO_ALTO)
-      .setPosition(1 + Math.floor(i / 2) * FILAS_POR_GRAFICO, i % 2 === 0 ? 1 : 8, 0, 0)
-      .build();
-    sh.insertChart(grafico);
-    fila += g.filas.length + 3;
-  });
+  sh.setFrozenRows(filaTabla);
 }
 
 // Texto del plan de pago para contar: la cobranza tal cual, o "Sin plan" si esta vacia, es X o trae un error
@@ -476,34 +422,7 @@ function cuotasActualizarConteo_(ss) {
     sucursales.forEach(function (suc) { filas.push([fecha, suc].concat(contar(meses[m], [suc]))); });
   });
 
-  // --- Graficos: ultimos meses, sin el total de cada fila ---
-  const etiquetasPlanes = planes.map(function (k) { return etiquetas[k]; });
-  const mesesAsc = clavesMes.slice().reverse().slice(-CUOTAS_CFG.GRAFICOS_MESES);
-  const ultimo = clavesMes[0];
-  const sinTotal = function (v) { return v.slice(0, planes.length); };
-  const todasSuc = {};
-  clavesMes.forEach(function (m) { Object.keys(meses[m]).forEach(function (x) { todasSuc[x] = true; }); });
-  const sucursalesOrden = Object.keys(todasSuc).sort();
-  const graficos = [];
-  if (ultimo !== undefined) {
-    graficos.push({
-      titulo: 'Operaciones por mes - todas las sucursales', cabecera: ['Mes'].concat(etiquetasPlanes),
-      filas: mesesAsc.map(function (m) { return [cuotasEtiquetaMes_(m)].concat(sinTotal(contar(meses[m], Object.keys(meses[m])))); })
-    });
-    graficos.push({
-      titulo: 'Operaciones por sucursal - ' + cuotasEtiquetaMes_(ultimo) + ' (mes en curso o ultimo)', cabecera: ['Sucursal'].concat(etiquetasPlanes),
-      filas: Object.keys(meses[ultimo]).sort().map(function (x) { return [x].concat(sinTotal(contar(meses[ultimo], [x]))); })
-    });
-    sucursalesOrden.forEach(function (x) {
-      graficos.push({
-        titulo: x + ' - operaciones por mes', cabecera: ['Mes'].concat(etiquetasPlanes),
-        filas: mesesAsc.map(function (m) {
-          return [cuotasEtiquetaMes_(m)].concat(meses[m][x] ? sinTotal(contar(meses[m], [x])) : planes.map(function () { return 0; }));
-        })
-      });
-    });
-  }
-  cuotasEscribirAnalisis_(ss, CUOTAS_CFG.HOJA_CONTEO, CUOTAS_CFG.HOJA_CONTEO_ANTERIOR, 'Detalle por mes y sucursal (operaciones = pedidos)', encabezado, filas, graficos);
+  cuotasEscribirAnalisis_(ss, CUOTAS_CFG.HOJA_CONTEO, CUOTAS_CFG.HOJA_CONTEO_ANTERIOR, 'Detalle por mes y sucursal (operaciones = pedidos)', encabezado, filas);
 }
 
 // =========================== VENDEDORES ===========================
@@ -581,33 +500,8 @@ function cuotasArmarVendedores_(ss, datos, enc, nombreHoja, etiqueta, incluir) {
     });
   });
 
-  // --- Graficos ---
-  const mesesAsc = clavesMes.slice().reverse().slice(-CUOTAS_CFG.GRAFICOS_MESES);
-  const ultimo = clavesMes[0];
-  const graficos = [];
-  if (ultimo !== undefined) {
-    graficos.push({
-      titulo: 'Productos vendidos por mes - vendedores ' + etiqueta, cabecera: ['Mes'].concat(etiquetasPlanes),
-      filas: mesesAsc.map(function (m) { return [cuotasEtiquetaMes_(m)].concat(cantidades(acumulado(m, null))); })
-    });
-    graficos.push({
-      titulo: 'Productos por vendedor - ' + cuotasEtiquetaMes_(ultimo) + ' (mes en curso o ultimo), por plan de pago', cabecera: ['Vendedor'].concat(etiquetasPlanes),
-      filas: Object.keys(meses[ultimo]).sort(function (a, b) { return ordenVend(ultimo, a, b); }).map(function (v) { return [v].concat(cantidades(acumulado(ultimo, v))); })
-    });
-    // Como en Analisis: un grafico por vendedor con su evolucion mes a mes (solo vendedores de locales)
-    if (etiqueta === 'locales') {
-      const vistos = {};
-      mesesAsc.forEach(function (m) { Object.keys(meses[m]).forEach(function (v) { vistos[v] = true; }); });
-      Object.keys(vistos).sort().forEach(function (v) {
-        graficos.push({
-          titulo: v + ' - productos por mes', cabecera: ['Mes'].concat(etiquetasPlanes),
-          filas: mesesAsc.map(function (m) { return [cuotasEtiquetaMes_(m)].concat(meses[m][v] ? cantidades(meses[m][v]) : planes.map(function () { return 0; })); })
-        });
-      });
-    }
-  }
   const titulo = 'Detalle por mes y vendedor ' + etiqueta + ' (productos = lineas de VS)';
-  cuotasEscribirAnalisis_(ss, nombreHoja, null, titulo, encabezado, filas, graficos);
+  cuotasEscribirAnalisis_(ss, nombreHoja, null, titulo, encabezado, filas);
 }
 
 // =========================== QR MERCADOPAGO ===========================
