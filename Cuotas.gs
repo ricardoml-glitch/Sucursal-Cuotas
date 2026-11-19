@@ -119,6 +119,12 @@ const CUOTAS_CFG = {
   },
   // Si la cobranza automatica (VS G) es de este medio, la condicion comercial debe ser la de ese medio
   COBRANZA_AUTO_CONDICION: [{ cobranza: 'GOCuotas', condicion: 'GoCuotas' }],
+  // Condicion comercial que no puede tener cierta cobranza (VS columna "Cobranza Automatica"): si la condicion
+  // contiene el texto de "condicion" y la cobranza contiene el de "cobranza", el pedido entra a Revisar.
+  CONDICION_COBRANZA_CRUZADA: [
+    { condicion: 'GoCuotas', cobranza: 'MODO' },
+    { condicion: 'QR', cobranza: 'MODO' }
+  ],
   CONTROLAR_CUOTAS_NOMBRE: true,           // la cuota que dice el nombre de la condicion debe coincidir con la cobrada (VS col H)
   PATRON_CUOTAS_NOMBRE: '(\\d+)\\s*cuotas?', // ej. "6 Cuotas Verde", "MP 12 Cuotas"
   TOLERANCIA_PESOS: 1,
@@ -893,6 +899,13 @@ function evaluarFila_(f, reglas) {
       };
     }
   }
+  // Condicion que no corresponde con la cobranza cargada (ej. GoCuotas cobrado por MODO)
+  const cruzada = cuotasCobranzaCruzada_(f);
+  if (cruzada) {
+    out.estado = 'revisar';
+    out.regla = (out.regla ? out.regla + ' | ' : '') + cruzada;
+    out.motivos = (out.motivos || []).concat([cruzada]);
+  }
   // Margen sobre costo (si VS tiene la columna de costo)
   const costo = cuotasEsNoAnalizar_(f) ? '' : evaluarCostoFila_(f);
   if (costo) {
@@ -928,6 +941,21 @@ function evaluarCostoFila_(f) {
 
 // Cobranza automatica (VS G) de un medio (ej. GOCuotas) con otra condicion comercial: se evitaria el recargo.
 // Devuelve el par { cobranza, condicion } que corresponde, o null
+// Texto del cruce si la condicion comercial no puede ir con esa cobranza ('' si esta bien)
+function cuotasCobranzaCruzada_(f) {
+  if (cuotasEsNoAnalizar_(f)) return '';
+  const g = cuotasClave_(f.cobranzaAuto);
+  if (g === '') return '';
+  const cond = cuotasClave_(f.condicion);
+  for (let i = 0; i < CUOTAS_CFG.CONDICION_COBRANZA_CRUZADA.length; i++) {
+    const p = CUOTAS_CFG.CONDICION_COBRANZA_CRUZADA[i];
+    if (cond.indexOf(cuotasClave_(p.condicion)) >= 0 && g.indexOf(cuotasClave_(p.cobranza)) >= 0) {
+      return 'Condicion "' + f.condicion + '" pero la cobranza es ' + p.cobranza;
+    }
+  }
+  return '';
+}
+
 function cuotasCondicionRequerida_(f) {
   if (cuotasEsNoAnalizar_(f)) return null;
   const g = cuotasClave_(f.cobranzaAuto);
