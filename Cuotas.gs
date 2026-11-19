@@ -596,6 +596,17 @@ function cuotasArmarVendedores_(ss, datos, enc, nombreHoja, etiqueta, incluir) {
       titulo: 'Productos por vendedor - ' + cuotasEtiquetaMes_(ultimo) + ' (mes en curso o ultimo), por plan de pago', cabecera: ['Vendedor'].concat(etiquetasPlanes),
       filas: Object.keys(meses[ultimo]).sort(function (a, b) { return ordenVend(ultimo, a, b); }).map(function (v) { return [v].concat(cantidades(acumulado(ultimo, v))); })
     });
+    // Como en Analisis: un grafico por vendedor con su evolucion mes a mes (solo vendedores de locales)
+    if (etiqueta === 'locales') {
+      const vistos = {};
+      mesesAsc.forEach(function (m) { Object.keys(meses[m]).forEach(function (v) { vistos[v] = true; }); });
+      Object.keys(vistos).sort().forEach(function (v) {
+        graficos.push({
+          titulo: v + ' - productos por mes', cabecera: ['Mes'].concat(etiquetasPlanes),
+          filas: mesesAsc.map(function (m) { return [cuotasEtiquetaMes_(m)].concat(meses[m][v] ? cantidades(meses[m][v]) : planes.map(function () { return 0; })); })
+        });
+      });
+    }
   }
   const titulo = 'Detalle por mes y vendedor ' + etiqueta + ' (productos = lineas de VS)';
   cuotasEscribirAnalisis_(ss, nombreHoja, null, titulo, encabezado, filas, graficos);
