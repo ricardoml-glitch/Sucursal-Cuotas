@@ -2,14 +2,16 @@
  * Sucursal Cuotas - control de ventas en cuotas por debajo del precio de lista.
  *
  * La hoja VS se sigue llenando con formulas. Este script LEE VS, evalua cada fila
- * por codigo (evaluarFila_) y escribe el resultado en la hoja Resumen.
- * No modifica VS.
+ * por codigo (evaluarFila_) y escribe lo que hay que revisar en la hoja Revisar,
+ * con una columna Observaciones que explica por que aparece cada pedido.
+ * Avisa por mail los pedidos nuevos. No modifica VS.
  */
 
 // =========================== CONFIGURACION ===========================
 const CUOTAS_CFG = {
   HOJA_VS: 'VS',
-  HOJA_RESUMEN: 'Resumen',
+  HOJA_RESUMEN: 'Revisar',
+  HOJA_RESUMEN_ANTERIOR: 'Resumen',   // si existe con este nombre, se renombra (conserva formato)
   HOJA_LOG: 'Log Cuotas',
   MAX_FILAS_LOG: 300,
 
@@ -23,19 +25,20 @@ const CUOTAS_CFG = {
   // Encabezados opcionales de VS (si existen se leen; si no, ese dato queda vacio)
   VS_OPCIONALES: { costo: 'Costo producto' },
 
-  // Columnas de Resumen (A:H). La columna I (hoy/ayer) no se toca.
+  // Columnas de Revisar (A:H).
   ENCABEZADO_RESUMEN: [
     'Fecha', 'Sucursal', 'Pedido: ID', 'Condición Comercial', 'Producto', 'Precio Unitario',
     'Plan', 'Canal de venta'
   ],
-  // Columnas extra de Resumen, a partir de la I
+  // Columnas extra de Revisar, a partir de la I
   COL_EXTRA_RESUMEN: 9,
-  ENCABEZADO_EXTRA_RESUMEN: ['Precio esperado', 'Regla aplicada', '% aplicado', 'Detectado'],
+  ENCABEZADO_EXTRA_RESUMEN: ['Precio esperado', 'Regla aplicada', '% aplicado', 'Detectado', 'Observaciones'],
+  COLUMNA_DETECTADO: 'Detectado',    // columna que lleva formato de fecha y hora
   FORMATO_FECHA_HORA: 'dd/MM/yyyy HH:mm',
 
   // Registro de cuando se detecto cada pedido a revisar (se conserva la primera vez)
   HOJA_DETECTADOS: 'Detectados',
-  ENCABEZADO_DETECTADOS: ['Clave', 'Detectado'],
+  ENCABEZADO_DETECTADOS: ['Clave', 'Detectado', 'Avisado'],
   ETIQUETA_BASE: { minimo: 'mínimo', lista: 'lista' },
 
   // Regla con la que se evaluo cada pedido: si la hoja de condiciones cambia despues, no es retroactivo
@@ -57,6 +60,20 @@ const CUOTAS_CFG = {
   ],
   // Sucursales que no se analizan
   SUCURSALES_NO_ANALIZAR: ['FULFILLMENT'],
+  // Canales de venta que no se analizan (venían excluidos en Ventas para Revisar)
+  CANALES_NO_ANALIZAR: ['Corporativo', 'Fravega', 'BNA', 'BAPRO'],
+  // Control de margen sobre costo (solo si VS tiene la columna "Costo producto"; ver VS_OPCIONALES)
+  COSTO: {
+    UMBRAL: 0.09,                                  // se revisa si (precio - costo) / costo es menor a este valor
+    CANALES_EXCLUIDOS: ['TioMusaAhora12-ML', 'Mayorista'],
+    PRODUCTOS_EXCLUIDOS: ['BENEFICIOS'],           // agregar aca los productos que no se quieren revisar
+    PROMO_NEGRO: { condicion: 'Promo Negro', min: -0.20 },   // solo se revisa si el margen sobre costo es menor a esto
+    // Condiciones cuyo precio esperado ya esta a ese % del PVM: no se revisan por costo dentro del rango
+    VENTANAS_PCT_PVM: [
+      { condicion: 'Negro', desde: -0.305, hasta: -0.295 },
+      { condicion: 'Rojo', desde: -0.205, hasta: -0.195 }
+    ]
+  },
   // Si la condicion no define base de precio (Precio Minimo y Asignar precio lista en FALSE):
   // 'omitir' = no se controla | 'lista' = contra precio de lista | 'pvm' = contra PVM
   SIN_BASE: 'omitir',
@@ -86,28 +103,38 @@ const CUOTAS_CFG = {
   RESUMEN_CANAL_WEB: 'PaginaWeb',          // PaginaWeb solo entra si la referencia contiene el texto de abajo
   RESUMEN_WEB_REFERENCIA: 'mostrador',
 
+  // Aviso por mail de los pedidos nuevos a revisar (un solo mail con todos los nuevos)
+  MAIL_ACTIVO: true,
+  MAIL_PARA: 'ricardoml@tiomusa.com.ar',
+  MAIL_ASUNTO: '⚠️ Pedido para revisar',
+
   // Triggers (se instalan una vez con instalarTriggersCuotas)
-  INTERVALO_HORAS: 1,   // el resumen se actualiza cada N horas
+  INTERVALO_HORAS: 1,   // Revisar se actualiza cada N horas
   ESPERA_LOCK_MS: 30000
 };
 
 // ============================ TRIGGERS ============================
 function instalarTriggersCuotas() {
-  const manejadores = ['actualizarResumenCuotas', 'menuCuotas'];
+  // Incluye los disparadores de versiones anteriores (Ventas para Revisar, menu Revision) para no dejarlos huerfanos
+  const manejadores = ['actualizarResumenCuotas', 'menuCuotas', 'revisarQRMercadopago',
+                       'ventasParaRevisarCiclo', 'checkAndNotifyOffPrice', 'menuRevision'];
   ScriptApp.getProjectTriggers()
     .filter(function (t) { return manejadores.indexOf(t.getHandlerFunction()) >= 0; })
     .forEach(function (t) { ScriptApp.deleteTrigger(t); });
   ScriptApp.newTrigger('actualizarResumenCuotas').timeBased().everyHours(CUOTAS_CFG.INTERVALO_HORAS).create();
+  ScriptApp.newTrigger(QR_HANDLER).timeBased().everyHours(QR_TRIGGER_CADA_HORAS).create();
   // Menu como trigger instalable: no pisa un onOpen que ya exista en el proyecto
   ScriptApp.newTrigger('menuCuotas').forSpreadsheet(SpreadsheetApp.getActive()).onOpen().create();
-  cuotasLog_('INFO', 'Triggers instalados: resumen cada ' + CUOTAS_CFG.INTERVALO_HORAS + ' h y menu Cuotas');
+  cuotasLog_('INFO', 'Triggers instalados: Revisar cada ' + CUOTAS_CFG.INTERVALO_HORAS + ' h, QR Mercadopago cada ' +
+             QR_TRIGGER_CADA_HORAS + ' h y menu Cuotas');
 }
 
 // ============================= MENU =============================
 function menuCuotas() {
   SpreadsheetApp.getUi()
     .createMenu('Cuotas')
-    .addItem('Actualizar Resumen', 'actualizarResumenCuotas')
+    .addItem('Actualizar Revisar', 'actualizarResumenCuotas')
+    .addItem('Revisar QR Mercadopago', 'revisarQRMercadopago')
     .addItem('Ver Log', 'irALogCuotas')
     .addToUi();
 }
@@ -131,10 +158,10 @@ function actualizarResumenCuotas() {
     const reglas = cuotasLeerReglas_(ss);
     const filas = cuotasLeerVS_(ss, reglas);
     const revisar = filas.filter(cuotasEsParaResumen_);
-    cuotasRegistrarDetectados_(ss, revisar);
+    const avisados = cuotasProcesarDetectados_(ss, revisar);
     revisar.sort(function (a, b) { return cuotasFechaMs_(b.fecha) - cuotasFechaMs_(a.fecha); });
     cuotasEscribirResumen_(ss, revisar);
-    cuotasLog_('OK', 'VS: ' + filas.length + ' filas leidas | Resumen: ' + revisar.length + ' | ' + (Date.now() - t0) + ' ms');
+    cuotasLog_('OK', 'VS: ' + filas.length + ' filas leidas | Revisar: ' + revisar.length + ' | Avisados: ' + avisados + ' | ' + (Date.now() - t0) + ' ms');
   } catch (e) {
     cuotasLog_('ERROR', e.message + (e.stack ? ' | ' + e.stack.split('\n')[1] : ''));
     throw e;
@@ -239,38 +266,83 @@ function cuotasGuardarReglasAplicadas_(ss, nuevos) {
 }
 
 // ====================== REGISTRO DE DETECCION ======================
-// Guarda cuando se detecto por primera vez cada pedido a revisar (queda en f.detectado)
-function cuotasRegistrarDetectados_(ss, filas) {
+// Guarda cuando se detecto por primera vez cada pedido a revisar (queda en f.detectado) y avisa por mail
+// los que todavia no se avisaron. Devuelve la cantidad de pedidos avisados.
+function cuotasProcesarDetectados_(ss, filas) {
   const nCols = CUOTAS_CFG.ENCABEZADO_DETECTADOS.length;
   const sh = ss.getSheetByName(CUOTAS_CFG.HOJA_DETECTADOS) || ss.insertSheet(CUOTAS_CFG.HOJA_DETECTADOS);
   if (sh.getLastRow() === 0) sh.getRange(1, 1, 1, nCols).setValues([CUOTAS_CFG.ENCABEZADO_DETECTADOS]);
 
   const datos = sh.getDataRange().getValues();
-  const mapa = {};
+  const conAvisado = String(datos[0][2] === undefined ? '' : datos[0][2]).trim() === CUOTAS_CFG.ENCABEZADO_DETECTADOS[2];
+  const registros = [];   // [clave, detectado, avisado]
+  const indice = {};
   for (let r = 1; r < datos.length; r++) {
-    if (String(datos[r][0]) !== '') mapa[String(datos[r][0])] = datos[r][1];
+    if (String(datos[r][0]) === '') continue;
+    // Registros de antes de existir el aviso: ya se conocian, no se vuelven a avisar
+    const avisado = conAvisado ? datos[r][2] : datos[r][1];
+    indice[String(datos[r][0])] = registros.length;
+    registros.push([datos[r][0], datos[r][1], avisado]);
   }
   const ahora = new Date();
-  const nuevos = [];
+  const pendientes = [];
   filas.forEach(function (f) {
-    if (!(f.clave in mapa)) {
-      mapa[f.clave] = ahora;
-      nuevos.push([f.clave, ahora]);
+    const k = f.clave;
+    if (!(k in indice)) {
+      indice[k] = registros.length;
+      registros.push([k, ahora, '']);
     }
-    f.detectado = mapa[f.clave];
+    const reg = registros[indice[k]];
+    f.detectado = reg[1];
+    if (reg[2] === '') pendientes.push({ fila: f, reg: reg });
   });
-  if (nuevos.length) sh.getRange(sh.getLastRow() + 1, 1, nuevos.length, nCols).setValues(nuevos);
 
-  // Limpieza de registros viejos
-  const limite = Date.now() - CUOTAS_CFG.RETENCION_DIAS * 24 * 3600 * 1000;
-  const vigentes = datos.slice(1).filter(function (f) {
-    return String(f[0]) !== '' && (!(f[1] instanceof Date) || f[1].getTime() >= limite);
-  });
-  if (vigentes.length < datos.length - 1) {
-    sh.getRange(2, 1, sh.getMaxRows() - 1, nCols).clearContent();
-    const todos = vigentes.concat(nuevos);
-    if (todos.length) sh.getRange(2, 1, todos.length, nCols).setValues(todos);
+  // Aviso por mail: si falla, no se marcan y se reintenta en la proxima ejecucion
+  let avisados = 0;
+  if (CUOTAS_CFG.MAIL_ACTIVO && pendientes.length) {
+    try {
+      cuotasEnviarMail_(pendientes.map(function (p) { return p.fila; }));
+      pendientes.forEach(function (p) { p.reg[2] = ahora; });
+      avisados = pendientes.length;
+    } catch (e) {
+      cuotasLog_('ERROR', 'No se pudo enviar el mail (se reintenta): ' + e.message);
+    }
   }
+
+  // Limpieza de registros viejos y guardado
+  const limite = Date.now() - CUOTAS_CFG.RETENCION_DIAS * 24 * 3600 * 1000;
+  const vigentes = registros.filter(function (g) {
+    return !(g[1] instanceof Date) || g[1].getTime() >= limite;
+  });
+  sh.getRange(1, 1, 1, nCols).setValues([CUOTAS_CFG.ENCABEZADO_DETECTADOS]);
+  sh.getRange(2, 1, Math.max(sh.getMaxRows() - 1, 1), nCols).clearContent();
+  if (vigentes.length) sh.getRange(2, 1, vigentes.length, nCols).setValues(vigentes);
+  return avisados;
+}
+
+// Un solo mail con todos los pedidos nuevos a revisar
+function cuotasEnviarMail_(filas) {
+  const n = filas.length;
+  const tz = Session.getScriptTimeZone();
+  let cuerpo = (n === 1 ? '1 pedido para revisar' : n + ' pedidos para revisar') + ':\n';
+  filas.forEach(function (f, k) {
+    cuerpo += '\n----------------------------------------\n';
+    cuerpo += 'Pedido ' + (k + 1) + ' de ' + n + '\n\n';
+    cuerpo += 'Pedido: ' + f.pedido + '\n';
+    cuerpo += 'Fecha: ' + (f.fecha instanceof Date ? Utilities.formatDate(f.fecha, tz, 'dd/MM/yyyy') : f.fecha) + '\n';
+    cuerpo += 'Sucursal: ' + f.sucursal + '\n';
+    cuerpo += 'Canal: ' + f.canal + '\n';
+    cuerpo += 'Condicion comercial: ' + f.condicion + '\n';
+    cuerpo += 'Producto: ' + f.producto + '\n';
+    cuerpo += 'Precio cobrado: $' + cuotasMonto_(cuotasANumero_(f.precioUnitario)) + '\n';
+    if (f.esperado !== '' && f.esperado !== null && f.esperado !== undefined) cuerpo += 'Precio esperado: $' + cuotasMonto_(f.esperado) + '\n';
+    cuerpo += 'Observaciones: ' + f.observaciones + '\n';
+  });
+  MailApp.sendEmail({
+    to: CUOTAS_CFG.MAIL_PARA,
+    subject: n === 1 ? CUOTAS_CFG.MAIL_ASUNTO : CUOTAS_CFG.MAIL_ASUNTO + ' (' + n + ')',
+    body: cuerpo
+  });
 }
 
 // ============================ REGLAS ============================
@@ -307,6 +379,15 @@ function cuotasLeerReglas_(ss) {
   return reglas;
 }
 
+function cuotasMonto_(n) {
+  if (n === null || n === undefined || isNaN(n)) return '-';
+  return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+}
+
+function cuotasPct_(x) {
+  return (Math.round(x * 1000) / 10).toFixed(1).replace('.', ',') + '%';
+}
+
 function cuotasANumero_(v) {
   if (typeof v === 'number') return v;
   if (v === '' || v === null || v === undefined) return null;
@@ -320,27 +401,63 @@ function cuotasANumero_(v) {
  * Devuelve { estado: '' | 'ok' | 'bien' | 'revisar', esperado, regla }.
  */
 function evaluarFila_(f, reglas) {
-  const res = evaluarFilaBase_(f, reglas);
+  let out = evaluarFilaBase_(f, reglas);
   const req = cuotasCondicionRequerida_(f);
-  if (!req) return res;
-  const detalle = 'Cobranza ' + req.cobranza + ' pero condicion "' + f.condicion + '" (debe ser ' + req.condicion + ')';
-  // Precio esperado segun la condicion que debieron usar (ej. GoCuotas con su recargo)
-  const reglaReq = reglas[cuotasClave_(req.condicion)];
-  const precioReq = reglaReq ? evaluarPrecioCondicion_(f, reglaReq) : null;
-  if (precioReq && precioReq.esperado !== '') {
-    return {
-      estado: 'revisar',
-      esperado: precioReq.esperado,
-      regla: 'Debio ser ' + req.condicion + ': ' + precioReq.regla + ' | ' + detalle,
-      aplicado: precioReq.aplicado || ''
-    };
+  if (req) {
+    const detalle = 'Cobranza ' + req.cobranza + ' pero la condicion es "' + f.condicion + '" (debe ser ' + req.condicion + ')';
+    // Precio esperado segun la condicion que debieron usar (ej. GoCuotas con su recargo)
+    const reglaReq = reglas[cuotasClave_(req.condicion)];
+    const precioReq = reglaReq ? evaluarPrecioCondicion_(f, reglaReq) : null;
+    if (precioReq && precioReq.esperado !== '') {
+      out = {
+        estado: 'revisar',
+        esperado: precioReq.esperado,
+        regla: 'Debio ser ' + req.condicion + ': ' + precioReq.regla + ' | ' + detalle,
+        aplicado: precioReq.aplicado || '',
+        motivos: [detalle + '. Con ' + req.condicion + ' debia cobrar $' + cuotasMonto_(precioReq.esperado) +
+                  ' (' + precioReq.regla + '), cobro $' + cuotasMonto_(cuotasANumero_(f.precioUnitario))]
+      };
+    } else {
+      out = {
+        estado: 'revisar',
+        esperado: out.esperado,
+        regla: (out.regla ? out.regla + ' | ' : '') + detalle,
+        aplicado: out.aplicado || '',
+        motivos: (out.motivos || []).concat([detalle])
+      };
+    }
   }
-  return {
-    estado: 'revisar',
-    esperado: res.esperado,
-    regla: (res.regla ? res.regla + ' | ' : '') + detalle,
-    aplicado: res.aplicado || ''
-  };
+  // Margen sobre costo (si VS tiene la columna de costo)
+  const costo = cuotasEsNoAnalizar_(f) ? '' : evaluarCostoFila_(f);
+  if (costo) {
+    out.estado = 'revisar';
+    out.motivos = (out.motivos || []).concat([costo]);
+  }
+  out.observaciones = (out.motivos || []).join(' | ');
+  return out;
+}
+
+// Margen sobre costo menor al umbral (con las excepciones heredadas de Ventas para Revisar)
+function evaluarCostoFila_(f) {
+  const c = CUOTAS_CFG.COSTO;
+  const costo = cuotasANumero_(f.costo);
+  const pu = cuotasANumero_(f.precioUnitario);
+  if (costo === null || costo === 0 || pu === null) return '';
+  const canal = cuotasClave_(f.canal);
+  const producto = cuotasClave_(f.producto);
+  const cond = cuotasClave_(f.condicion);
+  if (c.CANALES_EXCLUIDOS.some(function (x) { return cuotasClave_(x) === canal; })) return '';
+  if (c.PRODUCTOS_EXCLUIDOS.some(function (x) { return cuotasClave_(x) === producto; })) return '';
+  const pvm = cuotasANumero_(f.pvm);
+  const pctPvm = pvm ? (pu - pvm) / pvm : null;
+  if (pctPvm !== null && c.VENTANAS_PCT_PVM.some(function (w) {
+    return cuotasClave_(w.condicion) === cond && pctPvm > w.desde && pctPvm < w.hasta;
+  })) return '';
+  const umbral = cond === cuotasClave_(c.PROMO_NEGRO.condicion) ? c.PROMO_NEGRO.min : c.UMBRAL;
+  const pctCosto = (pu - costo) / costo;
+  if (pctCosto >= umbral) return '';
+  return 'Margen sobre costo ' + cuotasPct_(pctCosto) + ' (menor a ' + cuotasPct_(umbral) + '): cobro $' +
+         cuotasMonto_(pu) + ' con costo $' + cuotasMonto_(costo);
 }
 
 // Cobranza automatica (VS G) de un medio (ej. GOCuotas) con otra condicion comercial: se evitaria el recargo.
@@ -361,30 +478,35 @@ function cuotasEsNoAnalizar_(f) {
     return cuotasClave_(c) === cuotasClave_(f.condicion);
   }) || CUOTAS_CFG.SUCURSALES_NO_ANALIZAR.some(function (s) {
     return cuotasClave_(s) === cuotasClave_(f.sucursal);
+  }) || CUOTAS_CFG.CANALES_NO_ANALIZAR.some(function (c) {
+    return cuotasClave_(c) === cuotasClave_(f.canal);
   }) || CUOTAS_CFG.CANAL_CONDICION_NO_ANALIZAR.some(function (p) {
     return cuotasClave_(p.canal) === cuotasClave_(f.canal) && cuotasClave_(p.condicion) === cuotasClave_(f.condicion);
   });
 }
 
 function evaluarFilaBase_(f, reglas) {
-  const noAnalizar = CUOTAS_CFG.CONDICIONES_NO_ANALIZAR.some(function (c) {
-    return cuotasClave_(c) === cuotasClave_(f.condicion);
-  }) || CUOTAS_CFG.SUCURSALES_NO_ANALIZAR.some(function (s) {
-    return cuotasClave_(s) === cuotasClave_(f.sucursal);
-  }) || CUOTAS_CFG.CANAL_CONDICION_NO_ANALIZAR.some(function (p) {
-    return cuotasClave_(p.canal) === cuotasClave_(f.canal) && cuotasClave_(p.condicion) === cuotasClave_(f.condicion);
-  });
-  if (noAnalizar) return { estado: '', esperado: '', regla: '' };
+  if (cuotasEsNoAnalizar_(f)) return { estado: '', esperado: '', regla: '', motivos: [] };
   const regla = reglas[cuotasClave_(f.condicion)];
   if (regla) return evaluarPorCondicion_(f, regla);
   // Condicion que no esta en la hoja: igual se controla la cuota que dice el nombre
   const cuotas = evaluarCuotasNombre_(f, { nombre: f.condicion });
   const estadoCuotas = CUOTAS_CFG.USAR_REGLA_CUOTAS_SIN_CONDICION ? evaluarCuotas_(f) : '';
-  if (!cuotas.ok) return { estado: 'revisar', esperado: '', regla: cuotas.detalle };
+  if (!cuotas.ok) return { estado: 'revisar', esperado: '', regla: cuotas.detalle, motivos: [cuotas.detalle] };
   if (CUOTAS_CFG.USAR_REGLA_CUOTAS_SIN_CONDICION) {
-    return { estado: estadoCuotas, esperado: '', regla: 'cuotas' };
+    const motivos = [];
+    if (estadoCuotas === 'revisar') {
+      const pu = cuotasANumero_(f.precioUnitario);
+      const esQr = String(f.condicion) === CUOTAS_CFG.COND_QR_MINIMO;
+      const ref = esQr ? cuotasANumero_(f.pvm) : cuotasANumero_(f.lista);
+      motivos.push('Condicion "' + f.condicion + '" sin regla en condiciones comerciales; cobro en ' + cuotasANumero_(f.cuotas) +
+                   ' cuotas por $' + cuotasMonto_(pu) + (ref === null
+                     ? ' y falta el ' + (esQr ? 'PVM' : 'precio de lista') + ' para validar'
+                     : ', por debajo del ' + (esQr ? 'PVM' : 'precio de lista') + ' de $' + cuotasMonto_(ref)));
+    }
+    return { estado: estadoCuotas, esperado: '', regla: 'cuotas', motivos: motivos };
   }
-  return { estado: '', esperado: '', regla: '' };
+  return { estado: '', esperado: '', regla: '', motivos: [] };
 }
 
 // Condicion comercial de la hoja: precio esperado = base (lista o PVM) x coeficiente,
@@ -392,12 +514,15 @@ function evaluarFilaBase_(f, reglas) {
 function evaluarPorCondicion_(f, regla) {
   const precio = evaluarPrecioCondicion_(f, regla);
   const cuotas = evaluarCuotasNombre_(f, regla);
+  const motivos = (precio.motivos || []).slice();
+  if (!cuotas.ok) motivos.push(cuotas.detalle);
   if (cuotas.detalle === '') return precio;
   return {
     estado: cuotas.ok ? precio.estado : 'revisar',
     esperado: precio.esperado,
     regla: (precio.regla ? precio.regla + ' | ' : '') + cuotas.detalle,
-    aplicado: precio.aplicado || ''
+    aplicado: precio.aplicado || '',
+    motivos: motivos
   };
 }
 
@@ -409,12 +534,15 @@ function evaluarPrecioCondicion_(f, regla) {
   else if (regla.precioLista) { base = cuotasANumero_(f.lista); nombreBase = 'Lista'; }
   else if (CUOTAS_CFG.SIN_BASE === 'lista') { base = cuotasANumero_(f.lista); nombreBase = 'Lista'; }
   else if (CUOTAS_CFG.SIN_BASE === 'pvm') { base = cuotasANumero_(f.pvm); nombreBase = 'PVM'; }
-  else return { estado: '', esperado: '', regla: '', aplicado: '' };
+  else return { estado: '', esperado: '', regla: '', aplicado: '', motivos: [] };
 
-  if (regla.coeficiente === null) return { estado: '', esperado: '', regla: '', aplicado: '' };
+  if (regla.coeficiente === null) return { estado: '', esperado: '', regla: '', aplicado: '', motivos: [] };
   const etiqueta = nombreBase + ' x ' + regla.coeficiente;
   const pu = cuotasANumero_(f.precioUnitario);
-  if (base === null || pu === null) return { estado: 'revisar', esperado: '', regla: etiqueta + ' (falta precio)', aplicado: '' };
+  if (base === null || pu === null) {
+    return { estado: 'revisar', esperado: '', regla: etiqueta + ' (falta precio)', aplicado: '',
+             motivos: ['No se pudo validar el precio con ' + etiqueta + ': falta ' + (pu === null ? 'el precio cobrado' : (nombreBase === 'Lista' ? 'el precio de lista' : 'el PVM'))] };
+  }
 
   const esperado = Math.round(base * regla.coeficiente * 100) / 100;
   const pct = cuotasToleranciaPorcentaje_(regla.nombre);
@@ -424,7 +552,11 @@ function evaluarPrecioCondicion_(f, regla) {
   else if (pu <= esperado + CUOTAS_CFG.TOLERANCIA_PESOS) estado = 'ok';
   else estado = 'bien';
   const etiquetaFinal = pct > 0 ? etiqueta + ' (tolerancia ' + String(Math.round(pct * 1000) / 10).replace('.', ',') + '%)' : etiqueta;
-  return { estado: estado, esperado: esperado, regla: etiquetaFinal, aplicado: cuotasPorcentajeAplicado_(pu, base, nombreBase) };
+  const motivos = estado === 'revisar'
+    ? ['Cobro $' + cuotasMonto_(pu) + ' y con ' + etiquetaFinal + ' debia cobrar al menos $' + cuotasMonto_(esperado - tolerancia) +
+       ' (' + nombreBase + ' $' + cuotasMonto_(base) + ' x ' + regla.coeficiente + ')']
+    : [];
+  return { estado: estado, esperado: esperado, regla: etiquetaFinal, aplicado: cuotasPorcentajeAplicado_(pu, base, nombreBase), motivos: motivos };
 }
 
 function cuotasMaximoCuotas_(nombreCondicion, fecha) {
@@ -528,7 +660,13 @@ function cuotasFechaMs_(d) {
 
 // =========================== ESCRITURA ===========================
 function cuotasEscribirResumen_(ss, filas) {
-  const sh = ss.getSheetByName(CUOTAS_CFG.HOJA_RESUMEN) || ss.insertSheet(CUOTAS_CFG.HOJA_RESUMEN);
+  let sh = ss.getSheetByName(CUOTAS_CFG.HOJA_RESUMEN);
+  if (!sh) {
+    // La hoja se llamaba Resumen: se renombra para conservar formato y anchos
+    const anterior = ss.getSheetByName(CUOTAS_CFG.HOJA_RESUMEN_ANTERIOR);
+    if (anterior) { anterior.setName(CUOTAS_CFG.HOJA_RESUMEN); sh = anterior; }
+    else sh = ss.insertSheet(CUOTAS_CFG.HOJA_RESUMEN);
+  }
   const nCols = CUOTAS_CFG.ENCABEZADO_RESUMEN.length;
   sh.getRange(1, 1, sh.getMaxRows(), nCols).clearContent(); // tambien saca el QUERY viejo de A1
   sh.getRange(1, 1, 1, nCols).setValues([CUOTAS_CFG.ENCABEZADO_RESUMEN]);
@@ -540,9 +678,10 @@ function cuotasEscribirResumen_(ss, filas) {
       return [f.fecha, f.sucursal, f.pedido, f.condicion, f.producto, f.precioUnitario, f.cuotas, f.canal];
     });
     sh.getRange(2, 1, valores.length, nCols).setValues(valores);
-    const extra = filas.map(function (f) { return [f.esperado, f.regla, f.aplicado || '', f.detectado || '']; });
+    const extra = filas.map(function (f) { return [f.esperado, f.regla, f.aplicado || '', f.detectado || '', f.observaciones || '']; });
     sh.getRange(2, CUOTAS_CFG.COL_EXTRA_RESUMEN, extra.length, nExtra).setValues(extra);
-    sh.getRange(2, CUOTAS_CFG.COL_EXTRA_RESUMEN + nExtra - 1, extra.length, 1).setNumberFormat(CUOTAS_CFG.FORMATO_FECHA_HORA);
+    const colDetectado = CUOTAS_CFG.COL_EXTRA_RESUMEN + CUOTAS_CFG.ENCABEZADO_EXTRA_RESUMEN.indexOf(CUOTAS_CFG.COLUMNA_DETECTADO);
+    sh.getRange(2, colDetectado, extra.length, 1).setNumberFormat(CUOTAS_CFG.FORMATO_FECHA_HORA);
   }
 }
 
