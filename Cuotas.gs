@@ -64,9 +64,8 @@ const CUOTAS_CFG = {
   // Toma la columna "Vendedor" de VS (via Historial).
   HOJA_VENDEDORES: 'Vendedores',               // vendedores de los locales (con la sucursal)
   VENDEDORES_ONLINE: ['A Asignar', 'Rocio', 'Marcos P', 'Ricardo Leon', 'Micaela'],
-  // Sucursales de VS que en realidad son ventas online: no entran en Vendedores y en Analisis se agrupan como ONLINE
+  // Sucursales de VS que en realidad son ventas online: no entran en la hoja Vendedores (en Analisis se ven todas)
   SUCURSALES_ONLINE: ['FACT ELECTRONICA', 'FULFILLMENT'],
-  SUCURSAL_ONLINE_ETIQUETA: 'ONLINE',
   VENDEDOR_ENCABEZADO: 'Vendedor',
   VENDEDOR_SIN: '(sin vendedor)',
 
@@ -459,7 +458,6 @@ function cuotasActualizarConteo_(ss) {
     const clave = cuotasClave_(texto);
     if (!(clave in etiquetas)) etiquetas[clave] = texto;
     let suc = String(d[iSucursal]).trim() || '(sin sucursal)';
-    if (cuotasEsSucursalOnline_(suc)) suc = CUOTAS_CFG.SUCURSAL_ONLINE_ETIQUETA;
     if (!meses[mes]) meses[mes] = {};
     if (!meses[mes][suc]) meses[mes][suc] = {};
     if (!meses[mes][suc][clave]) meses[mes][suc][clave] = {};
@@ -493,8 +491,8 @@ function cuotasActualizarConteo_(ss) {
 
   const tablas = [{ titulo: 'Detalle por mes y sucursal (operaciones = pedidos)', encabezado: encabezado, filas: filas }];
   if (iVend >= 0) {
-    tablas.push(cuotasTablaPorClave_(datos, enc, 'Detalle por mes y vendedor (operaciones = pedidos; solo vendedores de locales)', 'Vendedor', 'Total operaciones',
-      function (v, suc) { return cuotasEsLocal_(v, suc) ? v : null; }, true));
+    tablas.push(cuotasTablaPorClave_(datos, enc, 'Detalle por mes y vendedor (operaciones = pedidos)', 'Vendedor', 'Total operaciones',
+      function (v) { return v; }, true));
   }
   cuotasEscribirAnalisis_(ss, CUOTAS_CFG.HOJA_CONTEO, CUOTAS_CFG.HOJA_CONTEO_ANTERIOR, tablas);
 }
