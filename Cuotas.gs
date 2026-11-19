@@ -39,6 +39,9 @@ const CUOTAS_CFG = {
   // Historial de ventas: cada fila de VS se guarda una sola vez (VS solo trae los ultimos dias) con lo que decia
   // en ese momento, mas el resultado de la revision. Nunca se borra ni se reescribe.
   HOJA_HISTORIAL: 'Historial',
+  // Una venta con datos de VS todavia sin resolver (Cobranza con #N/A, X o vacia; Vendedor con error) no se guarda hasta
+  // que se resuelvan o pasen estos dias (VS conserva 7): asi el historial no queda con datos incompletos.
+  HISTORIAL_ESPERA_DIAS: 3,
   // Las columnas de VS se copian tal cual (mismo orden y encabezados; si VS agrega una, se agrega aca tambien).
   // Despues van estas columnas de control, que ponen el script:
   ENCABEZADO_HISTORIAL_EXTRA: ['Precio esperado', 'Regla aplicada', 'Estado', 'Observaciones', 'Registrado', 'Clave'],
@@ -242,8 +245,16 @@ function cuotasRegistrarHistorial_(ss, filas) {
     repetidas[f.clave] = (repetidas[f.clave] || 0) + 1;
     const clave = f.clave + (repetidas[f.clave] > 1 ? '#' + repetidas[f.clave] : '');
     if (existentes[clave]) return;
-    existentes[clave] = true;
     const crudo = vs[f.filaVS - 1];
+    // Datos de VS que todavia no se resolvieron: se reintenta en la proxima corrida (hasta HISTORIAL_ESPERA_DIAS)
+    const esperaMs = CUOTAS_CFG.HISTORIAL_ESPERA_DIAS * 24 * 3600 * 1000;
+    if (!cuotasFechaMs_(f.fecha) || ahora.getTime() - cuotasFechaMs_(f.fecha) < esperaMs) {
+      const iPlan = encVS.indexOf(CUOTAS_CFG.VS.cobranza), iVend = encVS.indexOf(CUOTAS_CFG.VENDEDOR_ENCABEZADO);
+      const plan = iPlan >= 0 ? String(crudo[iPlan]).trim() : 'ok';
+      const vend = iVend >= 0 ? String(crudo[iVend]).trim() : 'ok';
+      if (plan === '' || plan.toUpperCase() === 'X' || plan.charAt(0) === '#' || vend.charAt(0) === '#') return;
+    }
+    existentes[clave] = true;
     const datos = {
       'Precio esperado': f.esperado, 'Regla aplicada': f.regla || '',
       'Estado': cuotasEsParaResumen_(f) ? 'Revisar' : 'OK', 'Observaciones': f.observaciones || '',
