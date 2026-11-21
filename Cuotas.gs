@@ -1203,7 +1203,15 @@ function evaluarCuotasNombre_(f, regla) {
   // Cuotas de cada tarjeta / MercadoPago del pedido (un pedido puede tener varias en cuotas distintas)
   let lista = Array.isArray(f.cuotasLista) ? f.cuotasLista : [];
   if (!lista.length && cuotasANumero_(f.cuotas) !== null && cuotasANumero_(f.cuotas) > 0) lista = [cuotasANumero_(f.cuotas)];
-  if (!lista.length) return vacio;   // efectivo, transferencia, debito: sin cuotas para controlar
+  if (!lista.length) {
+    // Condicion de N cuotas (2 o mas) pero ningun pago con cuotas (efectivo, debito, transferencia): me quiero enterar
+    const mN = String(regla.nombre).match(new RegExp(CUOTAS_CFG.PATRON_CUOTAS_NOMBRE, 'i'));
+    if (mN && parseInt(mN[1], 10) >= 2 && (f.tipos || []).length) {
+      const d = 'Cuotas: condicion ' + parseInt(mN[1], 10) + ' cuotas pero el pago no tiene cuotas (pagos: ' + (f.pagos || cobranza) + ')';
+      return { ok: false, detalle: d };
+    }
+    return vacio;   // efectivo, transferencia, debito: sin cuotas para controlar
+  }
   const cobradas = lista.length > 1 ? lista.join(', ') : lista[0];
 
   // Condiciones que no admiten cuotas (ej. Precio Online: maximo 1)
