@@ -22,6 +22,10 @@ const CUOTAS_CFG = {
     lista: 'Precio', pvm: 'PVM', canal: 'Canal de venta', referencia: 'Referenia'
   },
 
+  // Datos de pago que VS ya no trae: los arma Pagos.gs desde PED cuenta contable, PED CV y Ped cpv tpv y se guardan en Historial.
+  // Estas claves de VS se usan solo como nombre de columna del Historial.
+  VS_CALCULADAS: ['cobranza', 'cuotas', 'cobranzaAuto'],
+
   // Encabezados opcionales de VS (si existen se leen; si no, ese dato queda vacio)
   VS_OPCIONALES: { costo: 'Costo producto' },
 
@@ -46,7 +50,7 @@ const CUOTAS_CFG = {
   HISTORIAL_ESPERA_DIAS: 3,
   // Las columnas de VS se copian tal cual (mismo orden y encabezados; si VS agrega una, se agrega aca tambien).
   // Despues van estas columnas de control, que ponen el script:
-  ENCABEZADO_HISTORIAL_EXTRA: ['Precio esperado', 'Regla aplicada', 'Estado', 'Observaciones', 'Registrado', 'Clave'],
+  ENCABEZADO_HISTORIAL_EXTRA: ['Cobranza Automática: ID Cobranza', 'Cobranza', 'Cobranza 2', 'Pagos', 'Precio esperado', 'Regla aplicada', 'Estado', 'Observaciones', 'Registrado', 'Clave'],
 
   // Hoja de conteo mensual: cantidad de operaciones (pedidos) por plan de pago, calculada desde Historial
   HOJA_CONTEO: 'Análisis',
@@ -59,7 +63,8 @@ const CUOTAS_CFG = {
   CONTEO_PLAN_POR_CONDICION: [
     { condicion: 'GoCuotas', plan: 'GoCuotas' },
     { condicion: 'Deposito', plan: 'Deposito Bancario' },
-    { condicion: 'MODO', plan: 'MODO' }
+    { condicion: 'MODO', plan: 'MODO' },
+    { condicion: 'Efectivo', plan: 'efectivo' }   // condicion Efectivo sin tarjeta ni MP registrados = efectivo
   ],
 
   // Hoja de vendedores: por mes y vendedor, productos vendidos (lineas de VS) y su detalle por plan de pago.
@@ -118,6 +123,7 @@ const CUOTAS_CFG = {
   // Condiciones que no admiten cuotas: maximo de cuotas permitido en el plan cobrado (0 o 1)
   // Un numero fijo, o una lista de vigencias { desde: 'yyyy-mm-dd', max } segun la fecha del pedido (no es retroactivo)
   CONDICIONES_MAX_CUOTAS: {
+    'Efectivo': 1,   // efectivo con tarjeta o MP en mas de 1 cuota esta mal (con 1 cuota o debito esta bien)
     'Precio Online': 1,
     'Debito': 1,
     'Tarjeta de Credito': [{ desde: '2000-01-01', max: 1 }, { desde: '2026-11-16', max: 6 }]
@@ -129,9 +135,8 @@ const CUOTAS_CFG = {
   CONDICION_COBRANZA_CRUZADA: [
     { condicion: 'GoCuotas', cobranza: 'MODO' },
     { condicion: 'QR', cobranza: 'MODO' },
-    // Con "regex" la cobranza se compara con esa expresion (numero de pago de MercadoPago o "MercadoPago TM")
-    { condicion: 'Efectivo', regex: '^\\d{8,}$|mercadopago', texto: 'un pago de MercadoPago' },
-    { condicion: 'GoCuotas', regex: '^\\d{8,}$|mercadopago', texto: 'un pago de MercadoPago' }
+    // Con "tipos" se compara con los tipos de pago del pedido (mp, tarjeta, debito, gocuotas, modo, cc, efectivo)
+    { condicion: 'GoCuotas', tipos: ['mp'], texto: 'un pago de MercadoPago' }
   ],
   CONTROLAR_CUOTAS_NOMBRE: true,           // la cuota que dice el nombre de la condicion debe coincidir con la cobrada (VS col H)
   PATRON_CUOTAS_NOMBRE: '(\\d+)\\s*cuotas?', // ej. "6 Cuotas Verde", "MP 12 Cuotas"
@@ -235,7 +240,7 @@ function cuotasRegistrarHistorial_(ss, filas) {
   const vs = ss.getSheetByName(CUOTAS_CFG.HOJA_VS).getDataRange().getValues();
   const encVS = vs[0].map(function (h) { return String(h).trim(); });
   const colsVS = [];   // columnas de VS con encabezado, sin repetir
-  encVS.forEach(function (h, i) { if (h !== '' && encVS.indexOf(h) === i) colsVS.push(h); });
+  encVS.forEach(function (h, i) { if (h !== '' && encVS.indexOf(h) === i && extra.indexOf(h) < 0) colsVS.push(h); });
 
   let sh = ss.getSheetByName(CUOTAS_CFG.HOJA_HISTORIAL);
   if (sh && sh.getLastRow() > 0 && String(sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].join('|')).indexOf('Plan de pago') >= 0) {
@@ -252,6 +257,14 @@ function cuotasRegistrarHistorial_(ss, filas) {
   colsVS.forEach(function (h) {
     if (enc.indexOf(h) >= 0) return;
     const pos = enc.indexOf(extra[0]) + 1;
+    sh.insertColumnsBefore(pos, 1);
+    sh.getRange(1, pos).setValue(h);
+    enc.splice(pos - 1, 0, h);
+  });
+  // Columnas de control que faltan en un Historial existente (ej. las de pagos): se insertan antes de "Precio esperado"
+  extra.forEach(function (h) {
+    const pos = enc.indexOf('Precio esperado') + 1;
+    if (enc.indexOf(h) >= 0 || pos <= 0) return;
     sh.insertColumnsBefore(pos, 1);
     sh.getRange(1, pos).setValue(h);
     enc.splice(pos - 1, 0, h);
@@ -280,14 +293,15 @@ function cuotasRegistrarHistorial_(ss, filas) {
     // Datos de VS que todavia no se resolvieron: se reintenta en la proxima corrida (hasta HISTORIAL_ESPERA_DIAS)
     const esperaMs = CUOTAS_CFG.HISTORIAL_ESPERA_DIAS * 24 * 3600 * 1000;
     if (!cuotasFechaMs_(f.fecha) || ahora.getTime() - cuotasFechaMs_(f.fecha) < esperaMs) {
-      const iPlan = encVS.indexOf(CUOTAS_CFG.VS.cobranza), iVend = encVS.indexOf(CUOTAS_CFG.VENDEDOR_ENCABEZADO);
-      const plan = iPlan >= 0 ? String(crudo[iPlan]).trim() : 'ok';
+      const iVend = encVS.indexOf(CUOTAS_CFG.VENDEDOR_ENCABEZADO);
+      const plan = String(f.cobranza === null || f.cobranza === undefined ? '' : f.cobranza).trim();
       const vend = iVend >= 0 ? String(crudo[iVend]).trim() : 'ok';
       const explicaCond = cuotasPlanPorCondicion_(f.condicion) !== '';   // GoCuotas, Deposito, MODO: el plan sale de la condicion
       if (!explicaCond && (plan === '' || plan.toUpperCase() === 'X' || plan.charAt(0) === '#') || vend.charAt(0) === '#') return;
     }
     existentes[clave] = true;
     const datos = {
+      'Cobranza Automática: ID Cobranza': f.cobranzaAuto || '', 'Cobranza': f.cobranza || '', 'Cobranza 2': f.cuotas === undefined ? '' : f.cuotas, 'Pagos': f.pagos || '',
       'Precio esperado': f.esperado, 'Regla aplicada': f.regla || '',
       'Estado': cuotasEsParaResumen_(f) ? 'Revisar' : 'OK', 'Observaciones': f.observaciones || '',
       'Registrado': ahora, 'Clave': clave
@@ -621,6 +635,7 @@ function cuotasLeerVS_(ss, reglas) {
   const enc = datos[0].map(function (h) { return String(h).trim(); });
   const col = {};
   Object.keys(CUOTAS_CFG.VS).forEach(function (k) {
+    if (CUOTAS_CFG.VS_CALCULADAS.indexOf(k) >= 0) return;
     const i = enc.indexOf(CUOTAS_CFG.VS[k]);
     if (i < 0) throw new Error('VS: no existe la columna "' + CUOTAS_CFG.VS[k] + '"');
     col[k] = i;
@@ -630,6 +645,7 @@ function cuotasLeerVS_(ss, reglas) {
     if (i >= 0) col[k] = i;
   });
   const snapshots = cuotasLeerReglasAplicadas_(ss);
+  const pagosIdx = pagosCargar_(ss);
   const nuevos = [];
   const filas = [];
   for (let r = 1; r < datos.length; r++) {
@@ -637,6 +653,7 @@ function cuotasLeerVS_(ss, reglas) {
     if (String(f[col.pedido]).trim() === '') continue;
     const fila = {};
     Object.keys(col).forEach(function (k) { fila[k] = f[col[k]]; });
+    Object.assign(fila, pagosDePedido_(pagosIdx, fila.pedido));   // cobranza, cuotas, cobranzaAuto, pagos, tipos, cuotasLista
 
     // Regla vigente al evaluar el pedido por primera vez (no cambia si despues cambia la hoja)
     const cond = cuotasClave_(fila.condicion);
@@ -931,7 +948,9 @@ function cuotasCobranzaCruzada_(f) {
   for (let i = 0; i < CUOTAS_CFG.CONDICION_COBRANZA_CRUZADA.length; i++) {
     const p = CUOTAS_CFG.CONDICION_COBRANZA_CRUZADA[i];
     if (cond.indexOf(cuotasClave_(p.condicion)) < 0) continue;
-    if (p.regex) {
+    if (p.tipos) {
+      if ((f.tipos || []).some(function (t) { return p.tipos.indexOf(t) >= 0; })) return 'Condicion "' + f.condicion + '" pero tiene ' + p.texto + (f.pagos ? ' (' + f.pagos + ')' : '');
+    } else if (p.regex) {
       if (new RegExp(p.regex, 'i').test(g)) return 'Condicion "' + f.condicion + '" pero tiene ' + p.texto + ' (' + String(f.cobranzaAuto).trim() + ')';
     } else if (g.indexOf(cuotasClave_(p.cobranza)) >= 0) {
       return 'Condicion "' + f.condicion + '" pero la cobranza es ' + p.cobranza;
@@ -1086,19 +1105,22 @@ function evaluarCuotasNombre_(f, regla) {
   if (!CUOTAS_CFG.CONTROLAR_CUOTAS_NOMBRE) return vacio;
   const cobranza = String(f.cobranza === null || f.cobranza === undefined ? '' : f.cobranza).trim().toUpperCase();
   if (cobranza === '' || cobranza === 'X' || cobranza === '#N/A' || cuotasEsRefacturacion_(f.cobranza, f.cobranzaAuto)) return vacio;
-  const cobradas = cuotasANumero_(f.cuotas);
-  if (cobradas === null) return vacio;
+  // Cuotas de cada tarjeta / MercadoPago del pedido (un pedido puede tener varias en cuotas distintas)
+  let lista = Array.isArray(f.cuotasLista) ? f.cuotasLista : [];
+  if (!lista.length && cuotasANumero_(f.cuotas) !== null && cuotasANumero_(f.cuotas) > 0) lista = [cuotasANumero_(f.cuotas)];
+  if (!lista.length) return vacio;   // efectivo, transferencia, debito: sin cuotas para controlar
+  const cobradas = lista.length > 1 ? lista.join(', ') : lista[0];
 
   // Condiciones que no admiten cuotas (ej. Precio Online: maximo 1)
   const max = cuotasMaximoCuotas_(regla.nombre, f.fecha);
   if (max !== null) {
-    return cobradas <= max ? vacio : { ok: false, detalle: 'Cuotas: ' + regla.nombre + ' admite hasta ' + max + ', cobradas ' + cobradas };
+    return lista.every(function (c) { return c <= max; }) ? vacio : { ok: false, detalle: 'Cuotas: ' + regla.nombre + ' admite hasta ' + max + ', cobradas ' + cobradas };
   }
 
   const m = String(regla.nombre).match(new RegExp(CUOTAS_CFG.PATRON_CUOTAS_NOMBRE, 'i'));
   if (!m) return vacio;
   const esperadas = parseInt(m[1], 10);
-  if (cobradas === esperadas) return { ok: true, detalle: 'Cuotas ' + esperadas + ' ok' };
+  if (lista.every(function (c) { return c === esperadas; })) return { ok: true, detalle: 'Cuotas ' + esperadas + ' ok' };
   return { ok: false, detalle: 'Cuotas: condicion ' + esperadas + ', cobradas ' + cobradas };
 }
 
@@ -1153,7 +1175,7 @@ function cuotasEscribirResumen_(ss, filas) {
   sh.getRange(1, CUOTAS_CFG.COL_EXTRA_RESUMEN, 1, nExtra).setValues([CUOTAS_CFG.ENCABEZADO_EXTRA_RESUMEN]);
   if (filas.length) {
     const valores = filas.map(function (f) {
-      return [f.fecha, f.sucursal, f.pedido, f.condicion, f.producto, f.precioUnitario, f.cuotas, f.canal];
+      return [f.fecha, f.sucursal, f.pedido, f.condicion, f.producto, f.precioUnitario, f.pagos || f.cobranza, f.canal];
     });
     sh.getRange(2, 1, valores.length, nCols).setValues(valores);
     const extra = filas.map(function (f) { return [f.esperado, f.regla, f.aplicado || '', f.detectado || '', f.observaciones || '']; });
