@@ -25,6 +25,8 @@ const CUOTAS_CFG = {
   // Datos de pago que VS ya no trae: los arma Pagos.gs desde PED cuenta contable, PED CV y Ped cpv tpv y se guardan en Historial.
   // Estas claves de VS se usan solo como nombre de columna del Historial.
   VS_CALCULADAS: ['cobranza', 'cuotas', 'cobranzaAuto'],
+  // Tipos de pago (ver Pagos.gs) que no se controlan por condicion/cuotas, solo por margen sobre costo ("otro" = cuentas no clasificadas)
+  PAGOS_SOLO_COSTO_TIPOS: ['otro'],
 
   // Encabezados opcionales de VS (si existen se leen; si no, ese dato queda vacio)
   VS_OPCIONALES: { costo: 'Costo producto' },
@@ -871,6 +873,14 @@ function cuotasANumero_(v) {
  * Devuelve { estado: '' | 'ok' | 'bien' | 'revisar', esperado, regla }.
  */
 function evaluarFila_(f, reglas) {
+  // Pedidos pagados (aunque sea en parte) con plataformas especiales (Fravega, Mobbex, Provincia Compras, Tienda Nacion):
+  // el precio se maneja distinto, solo se controla el margen sobre costo
+  if (!cuotasEsNoAnalizar_(f) && (f.tipos || []).some(function (t) { return CUOTAS_CFG.PAGOS_SOLO_COSTO_TIPOS.indexOf(t) >= 0; })) {
+    const costoSolo = evaluarCostoFila_(f);
+    const soloCosto = { estado: costoSolo ? 'revisar' : '', esperado: '', regla: 'solo costo (' + (f.pagos || 'plataforma especial') + ')', motivos: costoSolo ? [costoSolo] : [] };
+    soloCosto.observaciones = soloCosto.motivos.join(' | ');
+    return soloCosto;
+  }
   let out = evaluarFilaBase_(f, reglas);
   const req = cuotasCondicionRequerida_(f);
   if (req) {
