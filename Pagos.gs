@@ -40,6 +40,7 @@ const PAGOS_CFG = {
     { regex: 'mercado ?pago|\\bmp\\b', tipo: 'mp', plan: '' },
     { regex: 'go ?cuotas', tipo: 'gocuotas', plan: 'GoCuotas' },
     { regex: 'modo', tipo: 'modo', plan: 'MODO' },
+    { regex: 'publicidad|administracion', tipo: 'interna', plan: '' },   // cajas internas: no son cobros de clientes
     { regex: 'efectivo|caja', tipo: 'efectivo', plan: 'efectivo' }
   ],
   TEXTO_REFACTURACION: 'refacturacion',

@@ -27,6 +27,8 @@ const CUOTAS_CFG = {
   VS_CALCULADAS: ['cobranza', 'cuotas', 'cobranzaAuto'],
   // Tipos de pago (ver Pagos.gs) que no se controlan por condicion/cuotas, solo por margen sobre costo ("otro" = cuentas no clasificadas)
   PAGOS_SOLO_COSTO_TIPOS: ['otro', 'refact'],
+  // Tipos de pago que no deberian aparecer en una venta (cajas de Administracion / Publicidad): el pedido entra a Revisar de inmediato
+  PAGOS_ALERTA_TIPOS: [{ tipo: 'interna', texto: 'una caja interna (Administracion o Publicidad)' }],
 
   // Encabezados opcionales de VS (si existen se leen; si no, ese dato queda vacio)
   VS_OPCIONALES: { costo: 'Costo producto' },
@@ -891,6 +893,22 @@ function cuotasANumero_(v) {
  * Devuelve { estado: '' | 'ok' | 'bien' | 'revisar', esperado, regla }.
  */
 function evaluarFila_(f, reglas) {
+  const out = evaluarFilaCondiciones_(f, reglas);
+  // Pedido cobrado en una caja que no es de ventas (ej. Caja Administracion): aviso inmediato, sin esperar
+  if (!cuotasEsNoAnalizar_(f)) {
+    CUOTAS_CFG.PAGOS_ALERTA_TIPOS.forEach(function (p) {
+      if ((f.tipos || []).indexOf(p.tipo) < 0) return;
+      const d = 'Pedido cobrado en ' + p.texto + ' (pagos: ' + (f.pagos || '-') + ')';
+      out.estado = 'revisar';
+      out.regla = (out.regla ? out.regla + ' | ' : '') + d;
+      out.motivos = (out.motivos || []).concat([d]);
+      out.observaciones = out.motivos.join(' | ');
+    });
+  }
+  return out;
+}
+
+function evaluarFilaCondiciones_(f, reglas) {
   // Pedidos pagados (aunque sea en parte) con plataformas especiales (Fravega, Mobbex, Provincia Compras, Tienda Nacion):
   // el precio se maneja distinto, solo se controla el margen sobre costo
   if (!cuotasEsNoAnalizar_(f) && (f.tipos || []).some(function (t) { return CUOTAS_CFG.PAGOS_SOLO_COSTO_TIPOS.indexOf(t) >= 0; })) {
@@ -1033,7 +1051,7 @@ function cuotasDiasHabiles_(desde, hasta) {
 
 // Pedido sin ningun pago registrado pasados DIAS_HABILES_SIN_PAGO dias habiles. Devuelve el motivo o ''.
 function cuotasSinPago_(f) {
-  if (cuotasEsNoAnalizar_(f) || (f.tipos || []).length) return '';
+  if (cuotasEsNoAnalizar_(f) || (f.tipos || []).length) return '';   // con "interna" ya hay otra alerta
   const dias = cuotasDiasHabiles_(f.fecha, new Date());
   if (dias < CUOTAS_CFG.DIAS_HABILES_SIN_PAGO) return '';
   return 'Sin pago registrado a los ' + dias + ' dias habiles (no figura en cuenta contable, PED CV ni tarjeta fisica)';
