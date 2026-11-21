@@ -128,7 +128,10 @@ const CUOTAS_CFG = {
   // contiene el texto de "condicion" y la cobranza contiene el de "cobranza", el pedido entra a Revisar.
   CONDICION_COBRANZA_CRUZADA: [
     { condicion: 'GoCuotas', cobranza: 'MODO' },
-    { condicion: 'QR', cobranza: 'MODO' }
+    { condicion: 'QR', cobranza: 'MODO' },
+    // Con "regex" la cobranza se compara con esa expresion (numero de pago de MercadoPago o "MercadoPago TM")
+    { condicion: 'Efectivo', regex: '^\\d{8,}$|mercadopago', texto: 'un pago de MercadoPago' },
+    { condicion: 'GoCuotas', regex: '^\\d{8,}$|mercadopago', texto: 'un pago de MercadoPago' }
   ],
   CONTROLAR_CUOTAS_NOMBRE: true,           // la cuota que dice el nombre de la condicion debe coincidir con la cobrada (VS col H)
   PATRON_CUOTAS_NOMBRE: '(\\d+)\\s*cuotas?', // ej. "6 Cuotas Verde", "MP 12 Cuotas"
@@ -927,7 +930,10 @@ function cuotasCobranzaCruzada_(f) {
   const cond = cuotasClave_(f.condicion);
   for (let i = 0; i < CUOTAS_CFG.CONDICION_COBRANZA_CRUZADA.length; i++) {
     const p = CUOTAS_CFG.CONDICION_COBRANZA_CRUZADA[i];
-    if (cond.indexOf(cuotasClave_(p.condicion)) >= 0 && g.indexOf(cuotasClave_(p.cobranza)) >= 0) {
+    if (cond.indexOf(cuotasClave_(p.condicion)) < 0) continue;
+    if (p.regex) {
+      if (new RegExp(p.regex, 'i').test(g)) return 'Condicion "' + f.condicion + '" pero tiene ' + p.texto + ' (' + String(f.cobranzaAuto).trim() + ')';
+    } else if (g.indexOf(cuotasClave_(p.cobranza)) >= 0) {
       return 'Condicion "' + f.condicion + '" pero la cobranza es ' + p.cobranza;
     }
   }
