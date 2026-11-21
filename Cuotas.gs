@@ -173,6 +173,11 @@ const CUOTAS_CFG = {
   MAIL_ACTIVO: true,
   MAIL_PARA: 'ricardoml@tiomusa.com.ar',
   MAIL_ASUNTO: '⚠️ Pedido para revisar',
+  // Aviso por mail (una sola vez por condicion y problema) de condiciones usadas en ventas recientes que no se pueden controlar:
+  // no estan en "condiciones comerciales", no tienen coeficiente o no tienen base de precio (Precio Minimo y Asignar precio lista en FALSE)
+  AVISO_CONDICIONES_ACTIVO: true,
+  MAIL_ASUNTO_CONDICIONES: '⚠️ Condicion comercial sin configurar',
+  PROPIEDAD_CONDICIONES_AVISADAS: 'condicionesAvisadas',
 
   // Triggers (se instalan una vez con instalarTriggersCuotas)
   INTERVALO_HORAS: 1,   // Revisar se actualiza cada N horas
@@ -229,6 +234,7 @@ function actualizarResumenCuotas() {
     const revisar = filas.filter(function (f) { return cuotasEsParaResumen_(f) && cuotasFechaMs_(f.fecha) >= desde.getTime(); });
     const qr = cuotasLeerQR_(ss);      // pedidos de QR Mercadopago con descuento mal aplicado
     qr.forEach(function (f) { revisar.push(f); });
+    try { cuotasAvisarCondiciones_(filas, reglas); } catch (e) { cuotasLog_('ERROR', 'Aviso de condiciones: ' + e.message); }
     const avisados = cuotasProcesarDetectados_(ss, revisar, cuotasSemillaQR_(ss));
     revisar.sort(function (a, b) { return cuotasFechaMs_(b.fecha) - cuotasFechaMs_(a.fecha); });
     cuotasEscribirResumen_(ss, revisar);
@@ -810,6 +816,50 @@ function cuotasProcesarDetectados_(ss, filas, semilla) {
   sh.getRange(2, 1, Math.max(sh.getMaxRows() - 1, 1), nCols).clearContent();
   if (vigentes.length) sh.getRange(2, 1, vigentes.length, nCols).setValues(vigentes);
   return avisados;
+}
+
+// Condiciones usadas en ventas de los ultimos REVISAR_DIAS que no se pueden controlar por precio: se avisa por mail una sola vez
+// por condicion y problema (se recuerda en las propiedades del script; si se corrige y vuelve a fallar, avisa de nuevo)
+function cuotasAvisarCondiciones_(filas, reglas) {
+  if (!CUOTAS_CFG.AVISO_CONDICIONES_ACTIVO || !CUOTAS_CFG.MAIL_ACTIVO) return;
+  const desde = new Date();
+  desde.setHours(0, 0, 0, 0);
+  desde.setDate(desde.getDate() - CUOTAS_CFG.REVISAR_DIAS);
+  const problemas = {};   // clave 'condicion||problema' -> { condicion, problema, pedidos }
+  filas.forEach(function (f) {
+    if (cuotasFechaMs_(f.fecha) < desde.getTime() || cuotasEsNoAnalizar_(f)) return;
+    if ((f.tipos || []).some(function (t) { return CUOTAS_CFG.PAGOS_SOLO_COSTO_TIPOS.indexOf(t) >= 0; })) return;   // solo costo
+    const nombre = String(f.condicion).trim();
+    const k = cuotasClave_(nombre);
+    if (k === '') return;
+    const regla = reglas[k];
+    let problema = '';
+    if (!regla) problema = 'no esta en la hoja "' + CUOTAS_CFG.HOJA_CONDICIONES + '"';
+    else if (regla.coeficiente === null) problema = 'no tiene coeficiente';
+    else if (!regla.precioMinimo && !regla.precioLista && CUOTAS_CFG.SIN_BASE === 'omitir') problema = 'no tiene base de precio (Precio Minimo y Asignar precio lista en FALSE)';
+    if (!problema) return;
+    const clave = k + '||' + problema;
+    if (!problemas[clave]) problemas[clave] = { condicion: nombre, problema: problema, pedidos: 0 };
+    problemas[clave].pedidos++;
+  });
+  const props = PropertiesService.getScriptProperties();
+  let avisadas = {};
+  try { avisadas = JSON.parse(props.getProperty(CUOTAS_CFG.PROPIEDAD_CONDICIONES_AVISADAS) || '{}'); } catch (e) { avisadas = {}; }
+  const nuevas = Object.keys(problemas).filter(function (k) { return !(k in avisadas); });
+  const vigentes = {};
+  Object.keys(problemas).forEach(function (k) { if (k in avisadas) vigentes[k] = avisadas[k]; });   // si se corrigio, deja de recordarse
+  if (nuevas.length) {
+    let cuerpo = 'Condiciones comerciales usadas en ventas recientes que no se pueden controlar por precio:\n';
+    nuevas.forEach(function (k) {
+      const p = problemas[k];
+      cuerpo += '\n- "' + p.condicion + '": ' + p.problema + ' (' + p.pedidos + ' linea' + (p.pedidos === 1 ? '' : 's') + ' de venta en los ultimos ' + CUOTAS_CFG.REVISAR_DIAS + ' dias)';
+    });
+    cuerpo += '\n\nCompletala en la hoja "' + CUOTAS_CFG.HOJA_CONDICIONES + '" y deja de avisarse.';
+    MailApp.sendEmail({ to: CUOTAS_CFG.MAIL_PARA, subject: CUOTAS_CFG.MAIL_ASUNTO_CONDICIONES, body: cuerpo });
+    nuevas.forEach(function (k) { vigentes[k] = new Date().getTime(); });
+    cuotasLog_('INFO', 'Aviso de condiciones sin configurar: ' + nuevas.length);
+  }
+  props.setProperty(CUOTAS_CFG.PROPIEDAD_CONDICIONES_AVISADAS, JSON.stringify(vigentes));
 }
 
 // Un solo mail con todos los pedidos nuevos a revisar
