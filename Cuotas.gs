@@ -67,6 +67,7 @@ const CUOTAS_CFG = {
   VENDEDORES_ONLINE: ['A Asignar', 'Rocio', 'Marcos P', 'Ricardo Leon', 'Micaela'],
   // Sucursales de VS que en realidad son ventas online: no entran en la hoja Vendedores (en Analisis se ven todas)
   SUCURSALES_ONLINE: ['FACT ELECTRONICA', 'FULFILLMENT'],
+  SUCURSAL_SUFIJOS: '\\s*(2G|FE)$',   // CRESPO FE y CRESPO2G son el mismo local: Analisis y Vendedores los muestran como CRESPO
   GRUPO_ML_ETIQUETA: 'Mercado Libre (FACT ELECTRONICA + FULFILLMENT)',   // grupo del resumen de Analisis
   GRUPO_SUCURSALES_ETIQUETA: 'Sucursales',
   VENDEDOR_ENCABEZADO: 'Vendedor',
@@ -477,7 +478,7 @@ function cuotasActualizarConteo_(ss) {
     const texto = cuotasTextoPlan_(d[iPlan], iCond >= 0 ? d[iCond] : '');
     const clave = cuotasClave_(texto);
     if (!(clave in etiquetas)) etiquetas[clave] = texto;
-    let suc = String(d[iSucursal]).trim() || '(sin sucursal)';
+    let suc = cuotasNombreLocal_(d[iSucursal]) || '(sin sucursal)';
     if (!meses[mes]) meses[mes] = {};
     if (!meses[mes][suc]) meses[mes][suc] = {};
     if (!meses[mes][suc][clave]) meses[mes][suc][clave] = {};
@@ -535,9 +536,16 @@ function cuotasActualizarVendedores_(ss) {
     cuotasTablaPorClave_(datos, enc, 'Detalle por mes y vendedor (productos = lineas de VS)', 'Vendedor', 'Productos vendidos',
       function (v, suc) { return cuotasEsLocal_(v, suc) ? v : null; }, false),
     cuotasTablaPorClave_(datos, enc, 'Detalle por mes y sucursal (productos = lineas de VS)', 'Sucursal', 'Productos vendidos',
-      function (v, suc) { return cuotasEsLocal_(v, suc) ? (suc || '(sin sucursal)') : null; }, false)
+      function (v, suc) { return cuotasEsLocal_(v, suc) ? (cuotasNombreLocal_(suc) || '(sin sucursal)') : null; }, false)
   ];
   cuotasEscribirAnalisis_(ss, CUOTAS_CFG.HOJA_VENDEDORES, null, tablas);
+}
+
+// Nombre del local sin el sufijo de sistema (2G / FE): "CRESPO2G" y "CRESPO FE" -> "CRESPO"
+function cuotasNombreLocal_(suc) {
+  const t = String(suc).trim();
+  if (t === '' || cuotasEsSucursalOnline_(t)) return t;
+  return t.replace(new RegExp(CUOTAS_CFG.SUCURSAL_SUFIJOS, 'i'), '').trim() || t;
 }
 
 function cuotasEsSucursalOnline_(suc) {
