@@ -51,6 +51,7 @@ const CUOTAS_CFG = {
   // Hoja de conteo mensual: cantidad de operaciones (pedidos) por plan de pago, calculada desde Historial
   HOJA_CONTEO: 'Análisis',
   HOJA_CONTEO_ANTERIOR: 'Cuotas',   // si existe con este nombre, se renombra
+  CONTEO_PLAN_SIN_PROMO: '\\s*\\((?:promo|prom)[^)]*\\)\\s*',   // "(PROMO NACION)" se cuenta como el plan normal: 03 PAGOS (PROMO NACION) = 03 Cuotas
   CONTEO_SIN_PLAN: 'Sin plan',   // cobranza vacia, X o con error
   // Cuando la cobranza no trae el plan (vacia, X o #N/A) se usa la condicion comercial para contarla:
   // por ejemplo GoCuotas cargado a mano porque el sistema no trajo el pago. condicion = texto que contiene el nombre.
@@ -402,9 +403,17 @@ function cuotasEsLocal_(vend, suc) {
   return !online && !cuotasEsSucursalOnline_(suc);
 }
 
+// Une los planes de promocion con el plan normal: "03 PAGOS (PROMO NACION)" -> "03 Cuotas", "DEBITO (PROMO NACION)" -> "DEBITO"
+function cuotasUnificarPlan_(texto) {
+  let t = texto.replace(new RegExp(CUOTAS_CFG.CONTEO_PLAN_SIN_PROMO, 'i'), ' ').trim();
+  const m = t.match(/^(\d+)\s+pagos?$/i);
+  if (m) t = m[1] + (parseInt(m[1], 10) === 1 ? ' Cuota' : ' Cuotas');
+  return t;
+}
+
 // Texto del plan de pago para contar: la cobranza tal cual, o "Sin plan" si esta vacia, es X o trae un error
 function cuotasTextoPlan_(valor, condicion) {
-  const texto = String(valor).trim();
+  const texto = cuotasUnificarPlan_(String(valor).trim());
   const clave = cuotasClave_(texto);
   if (clave !== '' && clave !== 'x' && texto.charAt(0) !== '#') return texto;
   const plan = cuotasPlanPorCondicion_(condicion);
