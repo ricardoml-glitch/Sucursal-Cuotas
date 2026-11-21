@@ -130,15 +130,21 @@ const CUOTAS_CFG = {
     'Debito': 1,
     'Tarjeta de Credito': [{ desde: '2000-01-01', max: 1 }, { desde: '2026-11-16', max: 6 }]
   },
+  // Condiciones que exigen un pago de cierto tipo (tipos de Pagos.gs): si el pedido tiene pagos y ninguno es de ese tipo, entra a Revisar.
+  // Ej. condicion GoCuotas (precio con su recargo) pero pagaron con tarjeta o MercadoPago: para esas cuotas hay otra condicion con otro recargo.
+  CONDICION_EXIGE_PAGO: [{ condicion: 'GoCuotas', tipo: 'gocuotas', texto: 'GoCuotas' }],
+  // Condicion con la que debieron cargar un pago con tarjeta/MP en 1 cuota (en 2 o mas se busca "N Cuotas ..." en condiciones comerciales)
+  CONDICION_UNA_CUOTA: 'Tarjeta de Credito',
+
   // Si la cobranza automatica (VS G) es de este medio, la condicion comercial debe ser la de ese medio
   COBRANZA_AUTO_CONDICION: [{ cobranza: 'GOCuotas', condicion: 'GoCuotas' }],
   // Condicion comercial que no puede tener cierta cobranza (VS columna "Cobranza Automatica"): si la condicion
   // contiene el texto de "condicion" y la cobranza contiene el de "cobranza", el pedido entra a Revisar.
   CONDICION_COBRANZA_CRUZADA: [
     { condicion: 'GoCuotas', cobranza: 'MODO' },
-    { condicion: 'QR', cobranza: 'MODO' },
+    { condicion: 'QR', cobranza: 'MODO' }
     // Con "tipos" se compara con los tipos de pago del pedido (mp, tarjeta, debito, gocuotas, modo, cc, efectivo)
-    { condicion: 'GoCuotas', tipos: ['mp'], texto: 'un pago de MercadoPago' }
+    // (condicion GoCuotas sin pago de GoCuotas se controla aparte: CONDICION_EXIGE_PAGO)
   ],
   CONTROLAR_CUOTAS_NOMBRE: true,           // la cuota que dice el nombre de la condicion debe coincidir con la cobrada (VS col H)
   PATRON_CUOTAS_NOMBRE: '(\\d+)\\s*cuotas?', // ej. "6 Cuotas Verde", "MP 12 Cuotas"
@@ -681,6 +687,19 @@ function cuotasLeerVS_(ss, reglas) {
       }
       if (reglaReq) reglasFila[condReq] = reglaReq;
     }
+    // Condicion que correspondia segun el pago real (ej. condicion GoCuotas pero pagaron en 12 cuotas con tarjeta)
+    const exig = cuotasCondicionExigida_(fila, reglas);
+    if (exig && exig.sugerida) {
+      const condSug = cuotasClave_(exig.sugerida);
+      const claveSug = cuotasClave_(fila.pedido) + '||' + cuotasClave_(fila.producto) + '||' + condSug;
+      let reglaSug = snapshots[claveSug];
+      if (!reglaSug && reglas[condSug]) {
+        reglaSug = reglas[condSug];
+        snapshots[claveSug] = reglaSug;
+        nuevos.push([claveSug, reglaSug.nombre, reglaSug.precioMinimo, reglaSug.precioLista, reglaSug.coeficiente === null ? '' : reglaSug.coeficiente, new Date()]);
+      }
+      if (reglaSug) reglasFila[condSug] = reglaSug;
+    }
     Object.assign(fila, evaluarFila_(fila, reglasFila));
     fila.clave = clave;
     fila.reglaCongelada = regla || null;   // regla de la condicion vigente cuando se evaluo el pedido por primera vez
@@ -907,6 +926,18 @@ function evaluarFila_(f, reglas) {
       };
     }
   }
+  // Condicion que exige un tipo de pago y el pedido se pago de otra forma (ej. condicion GoCuotas pagada con tarjeta en 12 cuotas)
+  const exig = cuotasCondicionExigida_(f, reglas);
+  if (exig) {
+    const reglaSug = exig.sugerida ? reglas[cuotasClave_(exig.sugerida)] : null;
+    const precioSug = reglaSug ? evaluarPrecioCondicion_(f, reglaSug) : null;
+    let detalle = 'Condicion "' + f.condicion + '" pero no hay pago de ' + exig.texto + ' (pagos: ' + (f.pagos || '-') + ')';
+    if (exig.sugerida) detalle += '; correspondia "' + exig.sugerida + '"' + (precioSug && precioSug.esperado !== ''
+      ? ' (debia cobrar $' + cuotasMonto_(precioSug.esperado) + ', cobro $' + cuotasMonto_(cuotasANumero_(f.precioUnitario)) + ')' : '');
+    out.estado = 'revisar';
+    out.regla = (out.regla ? out.regla + ' | ' : '') + detalle;
+    out.motivos = (out.motivos || []).concat([detalle]);
+  }
   // Condicion que no corresponde con la cobranza cargada (ej. GoCuotas cobrado por MODO)
   const cruzada = cuotasCobranzaCruzada_(f);
   if (cruzada) {
@@ -976,6 +1007,32 @@ function cuotasCondicionRequerida_(f) {
   for (let i = 0; i < CUOTAS_CFG.COBRANZA_AUTO_CONDICION.length; i++) {
     const p = CUOTAS_CFG.COBRANZA_AUTO_CONDICION[i];
     if (g.indexOf(cuotasClave_(p.cobranza)) >= 0 && cuotasClave_(f.condicion).indexOf(cuotasClave_(p.condicion)) < 0) return p;
+  }
+  return null;
+}
+
+// Condicion GoCuotas (u otra de CONDICION_EXIGE_PAGO) sin ningun pago de ese tipo. Devuelve { texto, sugerida } o null.
+// sugerida = nombre de la condicion de la hoja que correspondia segun las cuotas del pago real ('' si no se puede saber)
+function cuotasCondicionExigida_(f, reglas) {
+  if (cuotasEsNoAnalizar_(f)) return null;
+  const tipos = f.tipos || [];
+  if (!tipos.length || (f.cobranza === 'X' || f.cobranza === '') || tipos.indexOf('refact') >= 0) return null;   // sin pagos resueltos: no se puede afirmar
+  for (let i = 0; i < CUOTAS_CFG.CONDICION_EXIGE_PAGO.length; i++) {
+    const p = CUOTAS_CFG.CONDICION_EXIGE_PAGO[i];
+    if (cuotasClave_(f.condicion).indexOf(cuotasClave_(p.condicion)) < 0 || tipos.indexOf(p.tipo) >= 0) continue;
+    let sugerida = '';
+    const lista = Array.isArray(f.cuotasLista) ? f.cuotasLista : [];
+    if (lista.length) {
+      const n = Math.max.apply(null, lista);
+      if (n === 1) { const r = reglas[cuotasClave_(CUOTAS_CFG.CONDICION_UNA_CUOTA)]; sugerida = r ? r.nombre : ''; }
+      else {
+        Object.keys(reglas).forEach(function (k) {
+          const m = reglas[k].nombre.match(/^\s*(\d+)\s*cuotas/i);
+          if (m && parseInt(m[1], 10) === n && !sugerida) sugerida = reglas[k].nombre;
+        });
+      }
+    }
+    return { texto: p.texto, sugerida: sugerida };
   }
   return null;
 }
