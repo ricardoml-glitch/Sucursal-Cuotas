@@ -67,6 +67,8 @@ const CUOTAS_CFG = {
   VENDEDORES_ONLINE: ['A Asignar', 'Rocio', 'Marcos P', 'Ricardo Leon', 'Micaela'],
   // Sucursales de VS que en realidad son ventas online: no entran en la hoja Vendedores (en Analisis se ven todas)
   SUCURSALES_ONLINE: ['FACT ELECTRONICA', 'FULFILLMENT'],
+  GRUPO_ML_ETIQUETA: 'Mercado Libre (FACT ELECTRONICA + FULFILLMENT)',   // grupo del resumen de Analisis
+  GRUPO_SUCURSALES_ETIQUETA: 'Sucursales',
   VENDEDOR_ENCABEZADO: 'Vendedor',
   VENDEDOR_SIN: '(sin vendedor)',
 
@@ -342,7 +344,8 @@ function cuotasEscribirAnalisis_(ss, nombre, nombreAnterior, tablas) {
 // Tabla por mes y por una clave (vendedor o sucursal) con el detalle por plan de pago, desde las filas de Historial.
 // claveDe(vendedor, sucursal) devuelve la clave de la fila o null para no contarla. contarPedidos: true = pedidos distintos
 // (operaciones), false = lineas de VS (productos). Cada mes trae primero una fila TOTAL.
-function cuotasTablaPorClave_(datos, enc, titulo, etiquetaClave, etiquetaTotal, claveDe, contarPedidos) {
+// claveDe puede devolver varias claves (la fila cuenta en cada una). orden: lista fija de claves; si se da, no hay fila TOTAL.
+function cuotasTablaPorClave_(datos, enc, titulo, etiquetaClave, etiquetaTotal, claveDe, contarPedidos, orden) {
   const iVend = enc.indexOf(CUOTAS_CFG.VENDEDOR_ENCABEZADO), iSuc = enc.indexOf(CUOTAS_CFG.VS.sucursal);
   const iFecha = enc.indexOf(CUOTAS_CFG.VS.fecha), iPlan = enc.indexOf(CUOTAS_CFG.VS.cobranza);
   const iCond = enc.indexOf(CUOTAS_CFG.VS.condicion), iPed = enc.indexOf(CUOTAS_CFG.VS.pedido);
@@ -351,18 +354,20 @@ function cuotasTablaPorClave_(datos, enc, titulo, etiquetaClave, etiquetaTotal, 
     const d = datos[r];
     const vend = String(d[iVend]).trim() || CUOTAS_CFG.VENDEDOR_SIN;
     const suc = iSuc >= 0 ? String(d[iSuc]).trim() : '';
-    const k = claveDe(vend, suc);
+    const claves = [].concat(claveDe(vend, suc)).filter(function (x) { return x !== null; });
     const ms = cuotasFechaMs_(d[iFecha]);
-    if (k === null || !ms) continue;
+    if (!claves.length || !ms) continue;
     const f = new Date(ms);
     const mes = f.getFullYear() * 100 + (f.getMonth() + 1);
     const texto = cuotasTextoPlan_(d[iPlan], iCond >= 0 ? d[iCond] : '');
     const plan = cuotasClave_(texto);
     if (!(plan in etiquetas)) etiquetas[plan] = texto;
     if (!meses[mes]) meses[mes] = {};
-    if (!meses[mes][k]) meses[mes][k] = {};
-    if (!meses[mes][k][plan]) meses[mes][k][plan] = {};
-    meses[mes][k][plan][contarPedidos && iPed >= 0 ? String(d[iPed]).trim() : 'l' + r] = true;
+    claves.forEach(function (k) {
+      if (!meses[mes][k]) meses[mes][k] = {};
+      if (!meses[mes][k][plan]) meses[mes][k][plan] = {};
+      meses[mes][k][plan][contarPedidos && iPed >= 0 ? String(d[iPed]).trim() : 'l' + r] = true;
+    });
   }
   const planes = cuotasOrdenarPlanes_(etiquetas);
   const unir = function (m, claves) {   // ids distintos por plan para un conjunto de claves
@@ -387,8 +392,9 @@ function cuotasTablaPorClave_(datos, enc, titulo, etiquetaClave, etiquetaTotal, 
   Object.keys(meses).map(Number).sort(function (a, b) { return b - a; }).forEach(function (m) {
     const fecha = new Date(Math.floor(m / 100), m % 100 - 1, 1);
     const claves = Object.keys(meses[m]);
-    filas.push(fila(fecha, 'TOTAL', unir(m, claves)));
+    if (!orden) filas.push(fila(fecha, 'TOTAL', unir(m, claves)));
     const ordenadas = claves.map(function (k) { return { k: k, t: total(unir(m, [k])) }; }).sort(function (a, b) {
+      if (orden) return orden.indexOf(a.k) - orden.indexOf(b.k);
       return (a.k === CUOTAS_CFG.VENDEDOR_SIN) - (b.k === CUOTAS_CFG.VENDEDOR_SIN) || b.t - a.t || (a.k < b.k ? -1 : a.k > b.k ? 1 : 0);
     });
     ordenadas.forEach(function (o) { filas.push(fila(fecha, o.k, unir(m, [o.k]))); });
@@ -503,7 +509,11 @@ function cuotasActualizarConteo_(ss) {
     sucursales.forEach(function (suc) { filas.push([fecha, suc].concat(contar(meses[m], [suc]))); });
   });
 
-  const tablas = [{ titulo: 'Detalle por mes y sucursal (operaciones = pedidos)', encabezado: encabezado, filas: filas }];
+  const ML = CUOTAS_CFG.GRUPO_ML_ETIQUETA, SUC = CUOTAS_CFG.GRUPO_SUCURSALES_ETIQUETA;
+  const tablas = [];
+  tablas.push(cuotasTablaPorClave_(datos, enc, 'Resumen por mes: general, ' + ML + ' y sucursales (operaciones = pedidos)', 'Grupo', 'Total operaciones',
+    function (v, suc) { return ['General', cuotasEsSucursalOnline_(suc) ? ML : SUC]; }, true, ['General', ML, SUC]));
+  tablas.push({ titulo: 'Detalle por mes y sucursal (operaciones = pedidos)', encabezado: encabezado, filas: filas });
   if (iVend >= 0) {
     tablas.push(cuotasTablaPorClave_(datos, enc, 'Detalle por mes y vendedor (operaciones = pedidos)', 'Vendedor', 'Total operaciones',
       function (v) { return v; }, true));
