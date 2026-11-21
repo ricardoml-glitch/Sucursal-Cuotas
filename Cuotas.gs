@@ -26,7 +26,7 @@ const CUOTAS_CFG = {
   // Estas claves de VS se usan solo como nombre de columna del Historial.
   VS_CALCULADAS: ['cobranza', 'cuotas', 'cobranzaAuto'],
   // Tipos de pago (ver Pagos.gs) que no se controlan por condicion/cuotas, solo por margen sobre costo ("otro" = cuentas no clasificadas)
-  PAGOS_SOLO_COSTO_TIPOS: ['otro'],
+  PAGOS_SOLO_COSTO_TIPOS: ['otro', 'refact'],
 
   // Encabezados opcionales de VS (si existen se leen; si no, ese dato queda vacio)
   VS_OPCIONALES: { costo: 'Costo producto' },
