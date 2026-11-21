@@ -145,6 +145,8 @@ const CUOTAS_CFG = {
   QR_CONDICION: 'QR Mercadopago',   // condicion que se muestra en Revisar para los pedidos de QR mal cobrado
 
   // Aviso por mail de los pedidos nuevos a revisar (un solo mail con todos los nuevos)
+  // Revisar y el mail solo miran pedidos de los ultimos dias (si se carga historia en VS, lo viejo no se revisa ni se avisa)
+  REVISAR_DIAS: 7,
   MAIL_ACTIVO: true,
   MAIL_PARA: 'ricardoml@tiomusa.com.ar',
   MAIL_ASUNTO: '⚠️ Pedido para revisar',
@@ -198,7 +200,10 @@ function actualizarResumenCuotas() {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const reglas = cuotasLeerReglas_(ss);
     const filas = cuotasLeerVS_(ss, reglas);
-    const revisar = filas.filter(cuotasEsParaResumen_);
+    const desde = new Date();
+    desde.setHours(0, 0, 0, 0);
+    desde.setDate(desde.getDate() - CUOTAS_CFG.REVISAR_DIAS);
+    const revisar = filas.filter(function (f) { return cuotasEsParaResumen_(f) && cuotasFechaMs_(f.fecha) >= desde.getTime(); });
     const qr = cuotasLeerQR_(ss);      // pedidos de QR Mercadopago con descuento mal aplicado
     qr.forEach(function (f) { revisar.push(f); });
     const avisados = cuotasProcesarDetectados_(ss, revisar, cuotasSemillaQR_(ss));
