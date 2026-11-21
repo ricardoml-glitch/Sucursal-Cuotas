@@ -32,7 +32,10 @@ const PAGOS_CFG = {
   REFACT: { pedido: 1, id: 2, origen: 4 },
 
   // Cuentas contables: la primera que coincide (por la denominacion) define el tipo. Sin plan = se usa la denominacion.
+  // Cuentas que hoy existen: MercadoPago TM, FRAVEGA, PROVINCIA COMPRAS, REFACTURACION, Redondeo, Caja Cobranza <local>, MODO,
+  // Caja Publicidad, MOBBEX, Caja Administracion (y USD), Tienda Nacion, GOCuotas. Las no listadas abajo quedan como tipo "otro".
   CUENTAS: [
+    { regex: 'redondeo', tipo: 'ignorar', plan: '' },   // ajuste de centavos: no es un pago
     { regex: 'refactur', tipo: 'refact', plan: 'refacturacion' },
     { regex: 'mercado ?pago|\\bmp\\b', tipo: 'mp', plan: '' },
     { regex: 'go ?cuotas', tipo: 'gocuotas', plan: 'GoCuotas' },
@@ -96,6 +99,7 @@ function pagosCargar_(ss) {
     for (let i = 0; i < reglasCuenta.length; i++) {
       if (reglasCuenta[i].re.test(denom)) { tipo = reglasCuenta[i].tipo; plan = reglasCuenta[i].plan || denom; break; }
     }
+    if (tipo === 'ignorar') return;
     if (mp && tipo !== 'refact') tipo = 'mp';
     (idx.cuenta[ped] = idx.cuenta[ped] || []).push({ tipo: tipo, denom: denom, mp: mp, plan: plan });
   });
