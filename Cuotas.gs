@@ -52,6 +52,7 @@ const CUOTAS_CFG = {
   HOJA_CONTEO: 'Análisis',
   HOJA_CONTEO_ANTERIOR: 'Cuotas',   // si existe con este nombre, se renombra
   CONTEO_PLAN_SIN_PROMO: '\\s*\\((?:promo|prom)[^)]*\\)\\s*',   // "(PROMO NACION)" se cuenta como el plan normal: 03 PAGOS (PROMO NACION) = 03 Cuotas
+  CONTEO_EXCLUIR_TEXTO: 'refactur',   // refacturaciones (cobranza o ID de cobranza con este texto): no cuentan en Analisis ni Vendedores ni se comparan cuotas
   CONTEO_SIN_PLAN: 'Sin plan',   // cobranza vacia, X o con error
   // Cuando la cobranza no trae el plan (vacia, X o #N/A) se usa la condicion comercial para contarla:
   // por ejemplo GoCuotas cargado a mano porque el sistema no trajo el pago. condicion = texto que contiene el nombre.
@@ -349,12 +350,13 @@ function cuotasEscribirAnalisis_(ss, nombre, nombreAnterior, tablas) {
 function cuotasTablaPorClave_(datos, enc, titulo, etiquetaClave, etiquetaTotal, claveDe, contarPedidos, orden) {
   const iVend = enc.indexOf(CUOTAS_CFG.VENDEDOR_ENCABEZADO), iSuc = enc.indexOf(CUOTAS_CFG.VS.sucursal);
   const iFecha = enc.indexOf(CUOTAS_CFG.VS.fecha), iPlan = enc.indexOf(CUOTAS_CFG.VS.cobranza);
-  const iCond = enc.indexOf(CUOTAS_CFG.VS.condicion), iPed = enc.indexOf(CUOTAS_CFG.VS.pedido);
+  const iCond = enc.indexOf(CUOTAS_CFG.VS.condicion), iPed = enc.indexOf(CUOTAS_CFG.VS.pedido), iAuto = enc.indexOf(CUOTAS_CFG.VS.cobranzaAuto);
   const etiquetas = {}, meses = {};   // mes -> clave -> plan -> { id: true }
   for (let r = 1; r < datos.length; r++) {
     const d = datos[r];
     const vend = String(d[iVend]).trim() || CUOTAS_CFG.VENDEDOR_SIN;
     const suc = iSuc >= 0 ? String(d[iSuc]).trim() : '';
+    if (cuotasEsRefacturacion_(d[iPlan], iAuto >= 0 ? d[iAuto] : '')) continue;
     const claves = [].concat(claveDe(vend, suc)).filter(function (x) { return x !== null; });
     const ms = cuotasFechaMs_(d[iFecha]);
     if (!claves.length || !ms) continue;
@@ -418,6 +420,12 @@ function cuotasUnificarPlan_(texto) {
   return t;
 }
 
+// Refacturacion: la cobranza (I) o el ID de cobranza (H) dicen "refacturacion"
+function cuotasEsRefacturacion_(cobranza, cobranzaAuto) {
+  const t = CUOTAS_CFG.CONTEO_EXCLUIR_TEXTO;
+  return cuotasClave_(cobranza).indexOf(t) >= 0 || cuotasClave_(cobranzaAuto).indexOf(t) >= 0;
+}
+
 // Texto del plan de pago para contar: la cobranza tal cual, o "Sin plan" si esta vacia, es X o trae un error
 function cuotasTextoPlan_(valor, condicion) {
   const texto = cuotasUnificarPlan_(String(valor).trim());
@@ -464,6 +472,7 @@ function cuotasActualizarConteo_(ss) {
   const iSucursal = enc.indexOf(CUOTAS_CFG.VS.sucursal);
   const iCond = enc.indexOf(CUOTAS_CFG.VS.condicion);
   const iVend = enc.indexOf(CUOTAS_CFG.VENDEDOR_ENCABEZADO);
+  const iAuto = enc.indexOf(CUOTAS_CFG.VS.cobranzaAuto);
   if (iFecha < 0 || iPedido < 0 || iPlan < 0 || iSucursal < 0) throw new Error('Historial: faltan columnas Fecha, Sucursal, Pedido: ID o Cobranza');
 
   const etiquetas = {};   // clave del plan -> texto a mostrar
@@ -473,6 +482,7 @@ function cuotasActualizarConteo_(ss) {
     const pedido = String(d[iPedido]).trim();
     const ms = cuotasFechaMs_(d[iFecha]);
     if (pedido === '' || !ms) continue;
+    if (cuotasEsRefacturacion_(d[iPlan], iAuto >= 0 ? d[iAuto] : '')) continue;
     const f = new Date(ms);
     const mes = f.getFullYear() * 100 + (f.getMonth() + 1);
     const texto = cuotasTextoPlan_(d[iPlan], iCond >= 0 ? d[iCond] : '');
@@ -1069,7 +1079,7 @@ function evaluarCuotasNombre_(f, regla) {
   const vacio = { ok: true, detalle: '' };
   if (!CUOTAS_CFG.CONTROLAR_CUOTAS_NOMBRE) return vacio;
   const cobranza = String(f.cobranza === null || f.cobranza === undefined ? '' : f.cobranza).trim().toUpperCase();
-  if (cobranza === '' || cobranza === 'X' || cobranza === '#N/A') return vacio;
+  if (cobranza === '' || cobranza === 'X' || cobranza === '#N/A' || cuotasEsRefacturacion_(f.cobranza, f.cobranzaAuto)) return vacio;
   const cobradas = cuotasANumero_(f.cuotas);
   if (cobradas === null) return vacio;
 
