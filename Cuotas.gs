@@ -49,7 +49,8 @@ const CUOTAS_CFG = {
   HISTORIAL_SOLO_HASTA_AYER: true,
   // Una venta con datos de VS todavia sin resolver (Cobranza con #N/A, X o vacia; Vendedor con error) no se guarda hasta
   // que se resuelvan o pasen estos dias (VS conserva 7): asi el historial no queda con datos incompletos.
-  HISTORIAL_ESPERA_DIAS: 3,
+  HISTORIAL_ESPERA_DIAS_HABILES: 3,   // dias habiles (lunes a viernes) que se espera un dato sin resolver antes de guardar la venta igual
+  DIAS_HABILES_SIN_PAGO: 2,           // dias habiles sin ningun pago registrado (cuenta contable, PED CV, tarjeta fisica) y el pedido entra a Revisar
   // Las columnas de VS se copian tal cual (mismo orden y encabezados; si VS agrega una, se agrega aca tambien).
   // Despues van estas columnas de control, que ponen el script:
   ENCABEZADO_HISTORIAL_EXTRA: ['Cobranza Automática: ID Cobranza', 'Cobranza', 'Cobranza 2', 'Pagos', 'Precio esperado', 'Regla aplicada', 'Estado', 'Observaciones', 'Registrado', 'Clave'],
@@ -65,8 +66,7 @@ const CUOTAS_CFG = {
   CONTEO_PLAN_POR_CONDICION: [
     { condicion: 'GoCuotas', plan: 'GoCuotas' },
     { condicion: 'Deposito', plan: 'Deposito Bancario' },
-    { condicion: 'MODO', plan: 'MODO' },
-    { condicion: 'Efectivo', plan: 'efectivo' }   // condicion Efectivo sin tarjeta ni MP registrados = efectivo
+    { condicion: 'MODO', plan: 'MODO' }
   ],
 
   // Hoja de vendedores: por mes y vendedor, productos vendidos (lineas de VS) y su detalle por plan de pago.
@@ -298,9 +298,8 @@ function cuotasRegistrarHistorial_(ss, filas) {
     if (existentes[clave]) return;
     const crudo = vs[f.filaVS - 1];
     if (CUOTAS_CFG.HISTORIAL_SOLO_HASTA_AYER && cuotasFechaMs_(f.fecha) >= inicioHoy.getTime()) return;   // ventas de hoy: se guardan manana
-    // Datos de VS que todavia no se resolvieron: se reintenta en la proxima corrida (hasta HISTORIAL_ESPERA_DIAS)
-    const esperaMs = CUOTAS_CFG.HISTORIAL_ESPERA_DIAS * 24 * 3600 * 1000;
-    if (!cuotasFechaMs_(f.fecha) || ahora.getTime() - cuotasFechaMs_(f.fecha) < esperaMs) {
+    // Datos de VS que todavia no se resolvieron: se reintenta en la proxima corrida (hasta HISTORIAL_ESPERA_DIAS_HABILES dias habiles)
+    if (!cuotasFechaMs_(f.fecha) || cuotasDiasHabiles_(f.fecha, ahora) < CUOTAS_CFG.HISTORIAL_ESPERA_DIAS_HABILES) {
       const iVend = encVS.indexOf(CUOTAS_CFG.VENDEDOR_ENCABEZADO);
       const plan = String(f.cobranza === null || f.cobranza === undefined ? '' : f.cobranza).trim();
       const vend = iVend >= 0 ? String(crudo[iVend]).trim() : 'ok';
@@ -926,6 +925,13 @@ function evaluarFila_(f, reglas) {
       };
     }
   }
+  // Pedido que no tiene ningun pago registrado despues de los dias habiles permitidos
+  const sinPago = cuotasSinPago_(f);
+  if (sinPago) {
+    out.estado = 'revisar';
+    out.regla = (out.regla ? out.regla + ' | ' : '') + sinPago;
+    out.motivos = (out.motivos || []).concat([sinPago]);
+  }
   // Condicion que exige un tipo de pago y el pedido se pago de otra forma (ej. condicion GoCuotas pagada con tarjeta en 12 cuotas)
   const exig = cuotasCondicionExigida_(f, reglas);
   if (exig) {
@@ -1009,6 +1015,28 @@ function cuotasCondicionRequerida_(f) {
     if (g.indexOf(cuotasClave_(p.cobranza)) >= 0 && cuotasClave_(f.condicion).indexOf(cuotasClave_(p.condicion)) < 0) return p;
   }
   return null;
+}
+
+// Dias habiles (lunes a viernes) transcurridos desde la fecha de la venta hasta hoy (no cuenta la fecha de la venta; sin feriados)
+function cuotasDiasHabiles_(desde, hasta) {
+  if (!(desde instanceof Date) || isNaN(desde.getTime())) return 0;
+  const d = new Date(desde.getFullYear(), desde.getMonth(), desde.getDate());
+  const fin = new Date(hasta.getFullYear(), hasta.getMonth(), hasta.getDate());
+  let n = 0;
+  while (d < fin) {
+    d.setDate(d.getDate() + 1);
+    const dia = d.getDay();
+    if (dia !== 0 && dia !== 6) n++;
+  }
+  return n;
+}
+
+// Pedido sin ningun pago registrado pasados DIAS_HABILES_SIN_PAGO dias habiles. Devuelve el motivo o ''.
+function cuotasSinPago_(f) {
+  if (cuotasEsNoAnalizar_(f) || (f.tipos || []).length) return '';
+  const dias = cuotasDiasHabiles_(f.fecha, new Date());
+  if (dias < CUOTAS_CFG.DIAS_HABILES_SIN_PAGO) return '';
+  return 'Sin pago registrado a los ' + dias + ' dias habiles (no figura en cuenta contable, PED CV ni tarjeta fisica)';
 }
 
 // Condicion GoCuotas (u otra de CONDICION_EXIGE_PAGO) sin ningun pago de ese tipo. Devuelve { texto, sugerida } o null.
