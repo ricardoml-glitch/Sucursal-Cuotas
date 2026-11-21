@@ -49,7 +49,7 @@ const CUOTAS_CFG = {
   HISTORIAL_SOLO_HASTA_AYER: true,
   // Una venta con datos de VS todavia sin resolver (Cobranza con #N/A, X o vacia; Vendedor con error) no se guarda hasta
   // que se resuelvan o pasen estos dias (VS conserva 7): asi el historial no queda con datos incompletos.
-  HISTORIAL_ESPERA_DIAS_HABILES: 3,   // dias habiles (lunes a viernes) que se espera un dato sin resolver antes de guardar la venta igual
+  HISTORIAL_ESPERA_DIAS_HABILES: 4,   // dias habiles (lunes a viernes) que se espera un dato sin resolver antes de guardar la venta igual
   DIAS_HABILES_SIN_PAGO: 2,           // dias habiles sin ningun pago registrado (cuenta contable, PED CV, tarjeta fisica) y el pedido entra a Revisar
   // Las columnas de VS se copian tal cual (mismo orden y encabezados; si VS agrega una, se agrega aca tambien).
   // Despues van estas columnas de control, que ponen el script:
